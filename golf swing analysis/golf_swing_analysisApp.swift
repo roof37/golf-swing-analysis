@@ -11,7 +11,7 @@ import SwiftUI
 struct golf_swing_analysisApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
         }
     }
 }
