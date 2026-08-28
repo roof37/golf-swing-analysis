@@ -11,18 +11,18 @@
 import SwiftUI
 
 enum Perspective: String, CaseIterable, Identifiable {
-    case front = "Front"
+    case downLine = "Front"
     case top = "Top-down"
-    case downLine = "Down-line"
+    case side = "Side"
     case face = "Face"
 
     var id: String { rawValue }
 
     var blurb: String {
         switch self {
-        case .front: return "The shot flying away: watch it rise and curve off into the distance."
-        case .top: return "Bird's-eye: the club path (blue) and face aim (orange) set the start and curve."
-        case .downLine: return "Behind the player: target, path, and face lines show where it all points."
+        case .top: return "Bird's-eye: blue shows the start line, orange shows the actual flight, and green marks the target window."
+        case .downLine: return "Front view: target, path, and face lines show where it all points."
+        case .side: return "Side profile: launch angle, apex height, carry, and descent change with loft, attack, speed, and spin."
         case .face: return "Looking down at the ball: tap Swing to watch the face open then close through impact."
         }
     }
@@ -38,6 +38,7 @@ struct ShotPath {
     var carry: Double { max(swing.carryDistance, 1) }
     var maxLateral: Double { max(20, abs(swing.landingOffline) * 1.35) }
     var maxHeight: Double { max(swing.peakHeight, 10) }
+    var yardMarks: [Double] { stride(from: 50, through: carry, by: 50).map { $0 } }
 
     func lateral(at d: Double) -> Double {
         let start = tan(swing.launchDirection * .pi / 180) * d
@@ -84,6 +85,29 @@ struct FrontFlightView: View {
             let ball = CGPoint(x: cx, y: bottomY)
 
             ZStack {
+                // Sky above the horizon, rough turf below it.
+                LinearGradient(
+                    colors: [Scenery.skyTop, Scenery.skyHorizon],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: horizon)
+                .frame(maxHeight: .infinity, alignment: .top)
+
+                LinearGradient(
+                    colors: [Scenery.turfMid, Scenery.turfDeep],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .frame(height: h - horizon)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+
+                // Distant trees, softened by haze on the horizon.
+                TreeLineShape(seed: 1)
+                    .fill(Scenery.treeLine.opacity(0.75))
+                    .frame(width: w, height: 14)
+                    .position(x: cx, y: horizon - 7)
+
+                HorizonHaze(width: w, horizon: horizon)
+
                 // Fairway receding to the horizon.
                 Path { path in
                     path.move(to: CGPoint(x: cx - w * 0.5, y: bottomY))
@@ -92,14 +116,19 @@ struct FrontFlightView: View {
                     path.addLine(to: CGPoint(x: cx + w * 0.5, y: bottomY))
                     path.closeSubpath()
                 }
-                .fill(.green.opacity(0.18))
+                .fill(
+                    LinearGradient(
+                        colors: [Scenery.fairway, Scenery.fairwayLight],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
 
-                line(CGPoint(x: 0, y: horizon), CGPoint(x: w, y: horizon))
-                    .stroke(.secondary.opacity(0.3), lineWidth: 1)
+                perspectiveMowBands(cx: cx, w: w, horizon: horizon, bottomY: bottomY,
+                                    bottomHalf: 0.5, topHalf: 0.045)
 
                 // Target line to the vanishing point.
                 line(ball, CGPoint(x: cx, y: horizon))
-                    .stroke(style: dashed).foregroundStyle(.secondary)
+                    .stroke(.white.opacity(0.55), style: dashed)
 
                 // The shot flying away.
                 flightPath(carry: 1, point: arc, steps: 60)
@@ -126,7 +155,7 @@ struct FrontFlightView: View {
     private func flag(at p: CGPoint) -> some View {
         let topY = p.y - 22
         return ZStack {
-            line(p, CGPoint(x: p.x, y: topY)).stroke(.secondary, lineWidth: 1.5)
+            line(p, CGPoint(x: p.x, y: topY)).stroke(.white.opacity(0.85), lineWidth: 1.5)
             Path { path in
                 path.move(to: CGPoint(x: p.x, y: topY))
                 path.addLine(to: CGPoint(x: p.x + 12, y: topY + 4))
@@ -141,6 +170,236 @@ struct FrontFlightView: View {
         let curve = (swing.spinAxis / 45) * max(swing.carryDistance, 1) * 0.5
         if abs(curve) < 1 { return "straight" }
         return String(format: "%.0f yd %@", abs(curve), curve > 0 ? "R" : "L")
+    }
+}
+
+// MARK: - Side trajectory view
+
+struct SideTrajectoryView: View {
+    let swing: SwingModel
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let p = ShotPath(swing: swing)
+            let left: CGFloat = 24
+            let right: CGFloat = 18
+            let top: CGFloat = 54
+            let groundY = h - 30
+            let plotW = max(1, w - left - right)
+            let plotH = max(1, groundY - top)
+
+            let point: (Double) -> CGPoint = { distance in
+                let x = left + CGFloat(distance / p.carry) * plotW
+                let y = groundY - CGFloat(p.height(at: distance) / p.maxHeight) * plotH
+                return CGPoint(x: x, y: y)
+            }
+
+            let apexDistance = p.carry * p.apexFraction
+            let apex = point(apexDistance)
+            let landing = point(p.carry)
+            let launchGuideEnd = CGPoint(
+                x: left + cos(CGFloat(swing.launchAngle) * .pi / 180) * 58,
+                y: groundY - sin(CGFloat(swing.launchAngle) * .pi / 180) * 58
+            )
+
+            ZStack {
+                sideProfileBackground(width: w, height: h, top: top, groundY: groundY)
+
+                TreeLineShape(seed: 3)
+                    .fill(Scenery.treeLine.opacity(0.40))
+                    .frame(width: w, height: 13)
+                    .position(x: w / 2, y: groundY - 6.5)
+
+                HorizonHaze(width: w, horizon: groundY, height: 30)
+
+                ForEach(1..<4) { i in
+                    let y = groundY - plotH * CGFloat(i) / 4
+                    Path { path in
+                        path.move(to: CGPoint(x: left, y: y))
+                        path.addLine(to: CGPoint(x: w - right, y: y))
+                    }
+                    .stroke(.secondary.opacity(0.10), lineWidth: 1)
+                }
+
+                ForEach(p.yardMarks, id: \.self) { yards in
+                    let x = left + CGFloat(yards / p.carry) * plotW
+                    Path { path in
+                        path.move(to: CGPoint(x: x, y: groundY - 5))
+                        path.addLine(to: CGPoint(x: x, y: groundY + 5))
+                    }
+                    .stroke(.white.opacity(0.30), lineWidth: 1)
+
+                    Text("\(Int(yards))")
+                        .font(.system(size: 9, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.70))
+                        .position(x: x, y: groundY + 17)
+                }
+
+                Path { path in
+                    path.move(to: CGPoint(x: left, y: groundY))
+                    path.addLine(to: CGPoint(x: w - right, y: groundY))
+                }
+                .stroke(.white.opacity(0.40), lineWidth: 1.5)
+
+                Ellipse()
+                    .fill(.black.opacity(0.10))
+                    .frame(width: 28, height: 7)
+                    .position(x: left, y: groundY + 5)
+
+                Ellipse()
+                    .fill(.black.opacity(0.11))
+                    .frame(width: 34, height: 8)
+                    .position(x: landing.x, y: groundY + 5)
+
+                Path { path in
+                    path.move(to: CGPoint(x: left, y: groundY))
+                    path.addLine(to: launchGuideEnd)
+                }
+                .stroke(.blue.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+
+                flightPath(carry: p.carry, point: point, steps: 70)
+                    .stroke(apexColor.opacity(0.16), style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round))
+
+                flightPath(carry: p.carry, point: point, steps: 70)
+                    .stroke(apexColor, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+
+                ForEach(1..<7) { i in
+                    let distance = p.carry * Double(i) / 7
+                    let progress = Double(i) / 7
+                    let size = 12 - CGFloat(progress) * 5
+                    Circle()
+                        .fill(apexColor.opacity(0.72 - progress * 0.08))
+                        .frame(width: size, height: size)
+                        .position(point(distance))
+                }
+
+                Path { path in
+                    path.move(to: CGPoint(x: apex.x, y: apex.y))
+                    path.addLine(to: CGPoint(x: apex.x, y: groundY))
+                }
+                .stroke(apexColor.opacity(0.45), style: dashed)
+
+                apexMarker(at: apex)
+
+                Circle().fill(.white).stroke(.orange, lineWidth: 2)
+                    .frame(width: 12, height: 12)
+                    .position(x: left, y: groundY)
+
+                Circle()
+                    .fill(.orange.opacity(0.18))
+                    .frame(width: 26, height: 26)
+                    .position(landing)
+
+                Circle()
+                    .fill(.orange)
+                    .frame(width: 10, height: 10)
+                    .position(landing)
+
+                label("Launch \(String(format: "%.1f", swing.launchAngle))°", at: launchGuideEnd, alignment: .topLeading)
+                apexLabel(at: apex)
+                label("Carry \(Int(swing.carryDistance)) yd", at: landing, alignment: .topTrailing)
+            }
+        }
+    }
+
+    private func sideProfileBackground(width w: CGFloat, height h: CGFloat, top: CGFloat, groundY: CGFloat) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [Scenery.skyTop.opacity(0.75), Scenery.skyHorizon],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(0, groundY))
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            LinearGradient(
+                colors: [Scenery.fairway, Scenery.turfMid],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(0, h - groundY))
+            .frame(maxHeight: .infinity, alignment: .bottom)
+        }
+    }
+
+    private var apexCategory: String {
+        switch swing.peakHeight {
+        case ..<65: return "Low Apex"
+        case 105...: return "High Apex"
+        default: return "Stock Apex"
+        }
+    }
+
+    private var apexColor: Color {
+        switch swing.peakHeight {
+        case ..<65: return .blue
+        case 105...: return .purple
+        default: return .orange
+        }
+    }
+
+    private var apexIcon: String {
+        switch swing.peakHeight {
+        case ..<65: return "arrow.down.circle.fill"
+        case 105...: return "arrow.up.circle.fill"
+        default: return "target"
+        }
+    }
+
+    private func apexMarker(at point: CGPoint) -> some View {
+        ZStack {
+            Circle()
+                .fill(apexColor.opacity(0.16))
+                .frame(width: 42, height: 42)
+            Circle()
+                .fill(.thinMaterial)
+                .frame(width: 28, height: 28)
+            Circle()
+                .stroke(apexColor, lineWidth: 2)
+                .frame(width: 28, height: 28)
+            Image(systemName: apexIcon)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(apexColor)
+        }
+        .position(point)
+    }
+
+    private func apexLabel(at point: CGPoint) -> some View {
+        Text("\(apexCategory) · \(Int(swing.peakHeight)) ft")
+            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(apexColor.opacity(0.16), in: Capsule())
+            .foregroundStyle(apexColor)
+            .position(apexLabelPosition(for: point))
+    }
+
+    private func label(_ text: String, at point: CGPoint, alignment: Alignment) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.thinMaterial, in: Capsule())
+            .position(labelPosition(for: point, alignment: alignment))
+    }
+
+    private func apexLabelPosition(for point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x, y: point.y + 30)
+    }
+
+    private func labelPosition(for point: CGPoint, alignment: Alignment) -> CGPoint {
+        switch alignment {
+        case .topLeading:
+            return CGPoint(x: point.x + 32, y: point.y - 10)
+        case .topTrailing:
+            return CGPoint(x: point.x - 42, y: point.y - 14)
+        case .bottom:
+            return CGPoint(x: point.x, y: point.y - 16)
+        default:
+            return point
+        }
     }
 }
 
@@ -176,31 +435,138 @@ struct DownLineFlightView: View {
             }
 
             ZStack {
+                realisticRangeBackground(width: w, height: h, horizon: horizon, bottomY: bottomY)
+
+                // Distant trees, softened by haze on the horizon.
+                TreeLineShape(seed: 2)
+                    .fill(Scenery.treeLine.opacity(0.75))
+                    .frame(width: w, height: 15)
+                    .position(x: cx, y: horizon - 7.5)
+
+                HorizonHaze(width: w, horizon: horizon)
+
                 // Fairway in perspective.
                 Path { path in
-                    path.move(to: CGPoint(x: cx - w * 0.42, y: bottomY))
-                    path.addLine(to: CGPoint(x: cx - w * 0.04, y: horizon))
-                    path.addLine(to: CGPoint(x: cx + w * 0.04, y: horizon))
-                    path.addLine(to: CGPoint(x: cx + w * 0.42, y: bottomY))
+                    path.move(to: CGPoint(x: cx - w * 0.46, y: bottomY))
+                    path.addLine(to: CGPoint(x: cx - w * 0.055, y: horizon))
+                    path.addLine(to: CGPoint(x: cx + w * 0.055, y: horizon))
+                    path.addLine(to: CGPoint(x: cx + w * 0.46, y: bottomY))
                     path.closeSubpath()
                 }
-                .fill(.green.opacity(0.18))
+                .fill(
+                    LinearGradient(
+                        colors: [Scenery.fairway, Scenery.fairwayLight],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
 
-                line(CGPoint(x: 0, y: horizon), CGPoint(x: w, y: horizon))
-                    .stroke(.secondary.opacity(0.3), lineWidth: 1)
+                perspectiveMowBands(cx: cx, w: w, horizon: horizon, bottomY: bottomY,
+                                    bottomHalf: 0.46, topHalf: 0.055)
+
+                ForEach(1..<6) { i in
+                    let t = CGFloat(i) / 6
+                    let y = bottomY + (horizon - bottomY) * (1 - pow(1 - t, 2))
+                    let halfWidth = w * (0.055 + 0.405 * (1 - t))
+                    Path { path in
+                        path.move(to: CGPoint(x: cx - halfWidth, y: y))
+                        path.addLine(to: CGPoint(x: cx + halfWidth, y: y))
+                    }
+                    .stroke(.white.opacity(0.12), lineWidth: 1)
+                }
+
+                line(CGPoint(x: cx - w * 0.46, y: bottomY), CGPoint(x: cx - w * 0.055, y: horizon))
+                    .stroke(.white.opacity(0.30), lineWidth: 1.5)
+                line(CGPoint(x: cx + w * 0.46, y: bottomY), CGPoint(x: cx + w * 0.055, y: horizon))
+                    .stroke(.white.opacity(0.30), lineWidth: 1.5)
 
                 // Aim lines: target, path, face.
-                line(ball, horizonPt(0)).stroke(style: dashed).foregroundStyle(.secondary)
+                line(ball, horizonPt(0)).stroke(.white.opacity(0.6), style: dashed)
                 line(ball, horizonPt(swing.clubPath)).stroke(.blue, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 line(ball, horizonPt(swing.faceAngle)).stroke(.orange, style: StrokeStyle(lineWidth: 2, dash: [4, 4]))
 
                 // Ball flight rising away and curving.
                 flightPath(carry: 1, point: arc, steps: 60)
+                    .stroke(.orange.opacity(0.16), style: StrokeStyle(lineWidth: 9, lineCap: .round, lineJoin: .round))
+
+                flightPath(carry: 1, point: arc, steps: 60)
                     .stroke(.orange, style: StrokeStyle(lineWidth: 3, lineCap: .round))
 
-                Circle().fill(.white).stroke(.orange, lineWidth: 2).frame(width: 11, height: 11).position(ball)
+                ForEach(1..<7) { i in
+                    let t = Double(i) / 7
+                    let size = max(3, 12 - CGFloat(t) * 8)
+                    Circle()
+                        .fill(.orange.opacity(0.78 - t * 0.06))
+                        .frame(width: size, height: size)
+                        .position(arc(t))
+                }
+
+                perspectiveFlag(at: horizonPt(0), scale: 0.72)
+
+                Ellipse()
+                    .fill(.black.opacity(0.13))
+                    .frame(width: 26, height: 7)
+                    .position(x: ball.x, y: ball.y + 5)
+
+                Circle()
+                    .fill(.white)
+                    .stroke(.orange, lineWidth: 2)
+                    .frame(width: 12, height: 12)
+                    .position(ball)
             }
             .legend([(.secondary, "Target"), (.blue, "Path"), (.orange, "Face")])
+        }
+    }
+
+    private func realisticRangeBackground(width w: CGFloat, height h: CGFloat, horizon: CGFloat, bottomY: CGFloat) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [Scenery.skyTop, Scenery.skyHorizon],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(0, horizon))
+            .frame(maxHeight: .infinity, alignment: .top)
+
+            LinearGradient(
+                colors: [Scenery.turfMid, Scenery.turfDeep],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: max(0, h - horizon))
+            .frame(maxHeight: .infinity, alignment: .bottom)
+
+            Path { path in
+                path.move(to: CGPoint(x: 0, y: bottomY))
+                path.addLine(to: CGPoint(x: w * 0.42, y: horizon))
+                path.addLine(to: CGPoint(x: 0, y: horizon))
+                path.closeSubpath()
+            }
+            .fill(Scenery.turfDeep.opacity(0.5))
+
+            Path { path in
+                path.move(to: CGPoint(x: w, y: bottomY))
+                path.addLine(to: CGPoint(x: w * 0.58, y: horizon))
+                path.addLine(to: CGPoint(x: w, y: horizon))
+                path.closeSubpath()
+            }
+            .fill(Scenery.turfDeep.opacity(0.5))
+        }
+    }
+
+    private func perspectiveFlag(at point: CGPoint, scale: CGFloat) -> some View {
+        let poleHeight = 28 * scale
+        let flagWidth = 16 * scale
+        return ZStack {
+            line(point, CGPoint(x: point.x, y: point.y - poleHeight))
+                .stroke(.white.opacity(0.85), lineWidth: 1.4)
+            Path { path in
+                path.move(to: CGPoint(x: point.x, y: point.y - poleHeight))
+                path.addLine(to: CGPoint(x: point.x + flagWidth, y: point.y - poleHeight + 4 * scale))
+                path.addLine(to: CGPoint(x: point.x, y: point.y - poleHeight + 8 * scale))
+                path.closeSubpath()
+            }
+            .fill(.red.opacity(0.90))
         }
     }
 }
@@ -231,9 +597,18 @@ struct ClubFaceView: View {
             let baseDeg: Double = targetSign > 0 ? 0 : 180  // heading toward the target
             let tangentDeg = baseDeg + tiltSign * swing.clubPath
             let tangent = CGVector(dx: cos(tangentDeg * .pi / 180), dy: sin(tangentDeg * .pi / 180))
+            let rawBodyDir = CGVector(dx: -tangent.dy, dy: tangent.dx)
+            let bodyDir = rawBodyDir.dy >= 0
+                ? rawBodyDir
+                : CGVector(dx: -rawBodyDir.dx, dy: -rawBodyDir.dy)
 
-            // Hands sit below the ball (the golfer), nudged to the lead side.
-            let hands = CGPoint(x: ball.x + CGFloat(targetSign) * 16, y: h * 0.99)
+            // Hands sit on the body side of the ball. Rotating this vector with
+            // club path makes the setup look like the player aimed their feet/body.
+            let handsDistance = min(h * 0.46, 150)
+            let hands = CGPoint(
+                x: ball.x + bodyDir.dx * handsDistance + tangent.dx * CGFloat(targetSign) * 14,
+                y: ball.y + bodyDir.dy * handsDistance + tangent.dy * CGFloat(targetSign) * 14
+            )
 
             let pos: (Double) -> CGPoint = { s in
                 let along = (2 * s - 1) * Double(span)
@@ -246,39 +621,45 @@ struct ClubFaceView: View {
             }
 
             ZStack {
+                faceViewBackground(width: w, height: h, ball: ball)
+
+                setupGuides(ball: ball, tangent: tangent, bodyDir: bodyDir, pathAngle: tangentDeg, width: w, height: h)
+
+                impactZone(at: ball, width: min(w * 0.62, 210), angle: tangentDeg)
+
                 // Swing path line with a travel arrow toward the target.
                 line(pos(0), pos(1))
-                    .stroke(.blue.opacity(0.5), style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+                    .stroke(Theme.path.opacity(0.42), style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 arrowHead(at: pos(1), dir: tangent)
-                Text("target").font(.caption2).foregroundStyle(.secondary)
+                Text("target").font(.caption2).foregroundStyle(.white.opacity(0.85))
                     .position(x: pos(1).x, y: pos(1).y - 14)
 
                 // Ball.
-                Circle().fill(.white).stroke(.secondary, lineWidth: 1)
-                    .frame(width: 14, height: 14).position(ball)
+                ballTopView(at: ball)
 
                 // Shaft (head → hands) and head, swinging through impact.
                 TimelineView(.animation(paused: !playing)) { tl in
                     let s = currentS(now: tl.date)
                     let p = pos(s)
                     ZStack {
-                        line(p, hands).stroke(.black.opacity(0.55), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        clubHead(angle: headAngle(s)).position(p)
+                        shaft(from: hoselPoint(at: p, angle: headAngle(s)), to: hands)
+                        realisticClubHead(angle: headAngle(s), opacity: 1)
+                            .position(p)
+                        handsMarker(at: hands)
                     }
                 }
 
                 Text(faceLabel)
                     .font(.caption.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(8)
 
-                Button { leftHanded.toggle() } label: {
-                    Label(leftHanded ? "Lefty" : "Righty", systemImage: "figure.golf").font(.caption2)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                .padding(8)
+                handednessControl
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(8)
 
                 Button {
                     startDate = Date(); playing = true
@@ -299,6 +680,33 @@ struct ClubFaceView: View {
         return String(format: "Face %+.1f° (%@)", f, word)
     }
 
+    private var handednessControl: some View {
+        HStack(spacing: 2) {
+            handednessButton(title: "Right-handed", isSelected: !leftHanded) {
+                leftHanded = false
+            }
+            handednessButton(title: "Left-handed", isSelected: leftHanded) {
+                leftHanded = true
+            }
+        }
+        .padding(3)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func handednessButton(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+                .foregroundStyle(isSelected ? .white : .primary)
+                .background(isSelected ? Theme.path : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func currentS(now: Date) -> Double {
         guard playing else { return 0.5 }   // rest at impact
         let elapsed = now.timeIntervalSince(startDate)
@@ -310,15 +718,188 @@ struct ClubFaceView: View {
     }
 
     private func clubHead(angle: Double) -> some View {
+        realisticClubHead(angle: angle, opacity: 1)
+    }
+
+    private func faceViewBackground(width w: CGFloat, height h: CGFloat, ball: CGPoint) -> some View {
         ZStack {
-            // Head body (seen from above).
-            RoundedRectangle(cornerRadius: 6).fill(Color(.darkGray))
-                .frame(width: 24, height: 50)
-            // Leading edge = the face, pointing toward the target.
-            RoundedRectangle(cornerRadius: 2).fill(.orange)
-                .frame(width: 5, height: 48).offset(x: 11)
+            LinearGradient(
+                colors: [Scenery.fairway, Scenery.fairwayLight, Scenery.fairway],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            GrassTexture(bladeCount: 90, tint: Scenery.turfDeep.opacity(0.5))
+
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(.systemBackground).opacity(0.30))
+                .frame(width: min(w * 0.82, 300), height: min(h * 0.56, 170))
+                .position(x: ball.x, y: ball.y + 10)
+
+            ForEach(0..<5) { i in
+                let y = ball.y - 76 + CGFloat(i) * 36
+                line(CGPoint(x: w * 0.12, y: y), CGPoint(x: w * 0.88, y: y))
+                    .stroke(.white.opacity(0.13), lineWidth: 1)
+            }
         }
+    }
+
+    private func setupGuides(ball: CGPoint, tangent: CGVector, bodyDir: CGVector, pathAngle: Double, width: CGFloat, height: CGFloat) -> some View {
+        let stanceCenter = CGPoint(
+            x: ball.x + bodyDir.dx * min(height * 0.34, 110),
+            y: ball.y + bodyDir.dy * min(height * 0.34, 110)
+        )
+        let shoulderCenter = CGPoint(
+            x: ball.x + bodyDir.dx * min(height * 0.21, 72),
+            y: ball.y + bodyDir.dy * min(height * 0.21, 72)
+        )
+        let stanceHalf: CGFloat = min(width * 0.19, 72)
+        let footA = CGPoint(x: stanceCenter.x - tangent.dx * stanceHalf, y: stanceCenter.y - tangent.dy * stanceHalf)
+        let footB = CGPoint(x: stanceCenter.x + tangent.dx * stanceHalf, y: stanceCenter.y + tangent.dy * stanceHalf)
+        let shoulderA = CGPoint(x: shoulderCenter.x - tangent.dx * stanceHalf * 0.72, y: shoulderCenter.y - tangent.dy * stanceHalf * 0.72)
+        let shoulderB = CGPoint(x: shoulderCenter.x + tangent.dx * stanceHalf * 0.72, y: shoulderCenter.y + tangent.dy * stanceHalf * 0.72)
+
+        return ZStack {
+            line(footA, footB)
+                .stroke(.white.opacity(0.30), style: StrokeStyle(lineWidth: 2, lineCap: .round))
+            line(shoulderA, shoulderB)
+                .stroke(.white.opacity(0.20), style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+
+            footMarker(at: footA, angle: pathAngle)
+            footMarker(at: footB, angle: pathAngle)
+        }
+    }
+
+    private func footMarker(at point: CGPoint, angle: Double) -> some View {
+        Capsule()
+            .fill(.white.opacity(0.22))
+            .overlay {
+                Capsule().stroke(.white.opacity(0.28), lineWidth: 1)
+            }
+            .frame(width: 48, height: 16)
+            .rotationEffect(.degrees(angle))
+            .position(point)
+    }
+
+    private func impactZone(at ball: CGPoint, width: CGFloat, angle: Double) -> some View {
+        ZStack {
+            Capsule()
+                .fill(Theme.face.opacity(0.10))
+                .frame(width: width, height: 34)
+            Capsule()
+                .stroke(Theme.face.opacity(0.22), style: StrokeStyle(lineWidth: 1))
+                .frame(width: width, height: 34)
+            Capsule()
+                .fill(.secondary.opacity(0.16))
+                .frame(width: width, height: 1)
+        }
+        .position(ball)
+        .rotationEffect(.degrees(angle), anchor: .center)
+    }
+
+    private func ballTopView(at point: CGPoint) -> some View {
+        ZStack {
+            Circle()
+                .fill(.white)
+                .overlay { Circle().stroke(.secondary.opacity(0.45), lineWidth: 1) }
+                .frame(width: 17, height: 17)
+            Circle()
+                .fill(.secondary.opacity(0.18))
+                .frame(width: 2.5, height: 2.5)
+                .offset(x: -3, y: -2)
+            Circle()
+                .fill(.secondary.opacity(0.15))
+                .frame(width: 2, height: 2)
+                .offset(x: 3, y: 2)
+        }
+        .position(point)
+    }
+
+    /// Driver head seen from above: carbon crown, curved face band on the leading
+    /// edge, alignment mark, and a hosel at the heel corner. Drawn heel-down
+    /// (right-handed is mirrored) and shifted back so the face sits tangent to
+    /// the ball when positioned on it; `angle` rotates about that contact point.
+    private func realisticClubHead(angle: Double, opacity: Double) -> some View {
+        ZStack {
+            DriverCrownShape()
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: 0.44), Color(white: 0.30), Color(white: 0.13)],
+                        startPoint: .trailing,
+                        endPoint: .leading
+                    )
+                )
+            DriverCrownShape()
+                .stroke(.white.opacity(0.30), lineWidth: 1)
+
+            // Sheen across the crown.
+            DriverCrownShape()
+                .fill(
+                    LinearGradient(
+                        colors: [.white.opacity(0.18), .clear],
+                        startPoint: .topTrailing,
+                        endPoint: .bottomLeading
+                    )
+                )
+
+            // Alignment mark just behind the face.
+            Circle()
+                .fill(.white.opacity(0.9))
+                .frame(width: 3.5, height: 3.5)
+                .offset(x: 12)
+
+            // Face band along the leading edge.
+            FaceEdgeShape()
+                .stroke(Theme.face, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+
+            // Hosel at the heel-front corner.
+            Circle()
+                .fill(Color(white: 0.55))
+                .overlay { Circle().stroke(.white.opacity(0.45), lineWidth: 1) }
+                .frame(width: 9, height: 9)
+                .offset(x: 20.5, y: 17.5)
+        }
+        .frame(width: 44, height: 48)
+        .compositingGroup()
+        .opacity(opacity)
+        .scaleEffect(x: 1, y: leftHanded ? 1 : -1)
+        .offset(x: -33)
         .rotationEffect(.degrees(angle))
+    }
+
+    /// Screen position of the hosel for a head pivoting about `p` at `angle`,
+    /// matching the hosel drawn in `realisticClubHead`.
+    private func hoselPoint(at p: CGPoint, angle: Double) -> CGPoint {
+        let local = CGVector(dx: -12.5, dy: leftHanded ? 17.5 : -17.5)
+        let a = CGFloat(angle) * .pi / 180
+        return CGPoint(
+            x: p.x + local.dx * cos(a) - local.dy * sin(a),
+            y: p.y + local.dx * sin(a) + local.dy * cos(a)
+        )
+    }
+
+    private func shaft(from hosel: CGPoint, to hands: CGPoint) -> some View {
+        ZStack {
+            line(hosel, hands)
+                .stroke(.secondary.opacity(0.58), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
+            line(hosel, hands)
+                .stroke(.white.opacity(0.22), style: StrokeStyle(lineWidth: 0.7, lineCap: .round))
+        }
+    }
+
+    private func handsMarker(at point: CGPoint) -> some View {
+        ZStack {
+            Circle()
+                .fill(.regularMaterial)
+                .frame(width: 18, height: 18)
+            Circle()
+                .stroke(.secondary.opacity(0.35), lineWidth: 1)
+                .frame(width: 18, height: 18)
+            Capsule()
+                .fill(.secondary.opacity(0.45))
+                .frame(width: 18, height: 5)
+        }
+        .position(point)
     }
 
     private func arrowHead(at p: CGPoint, dir: CGVector) -> some View {
@@ -331,6 +912,41 @@ struct ClubFaceView: View {
             }
         }
         .stroke(.blue.opacity(0.6), lineWidth: 2)
+    }
+}
+
+/// Top-down outline of a driver crown: face along the trailing (maxX) edge,
+/// toe at minY, rounded pear-shaped body tapering to the heel at maxY.
+private struct DriverCrownShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        func pt(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + fx * rect.width, y: rect.minY + fy * rect.height)
+        }
+        var p = Path()
+        p.move(to: pt(1.0, 0.86))
+        // Leading edge (heel to toe) with a slight bulge.
+        p.addQuadCurve(to: pt(1.0, 0.14), control: pt(1.07, 0.50))
+        // Around the toe and back of the crown.
+        p.addCurve(to: pt(0.05, 0.40), control1: pt(0.92, -0.08), control2: pt(0.22, -0.02))
+        // Back to the heel.
+        p.addCurve(to: pt(0.58, 0.96), control1: pt(-0.04, 0.72), control2: pt(0.24, 1.00))
+        // Heel taper into the hosel.
+        p.addQuadCurve(to: pt(1.0, 0.86), control: pt(0.88, 0.94))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// The leading-edge curve of `DriverCrownShape`, stroked as the face band.
+private struct FaceEdgeShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: rect.maxX, y: rect.minY + 0.84 * rect.height))
+        p.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + 0.16 * rect.height),
+            control: CGPoint(x: rect.maxX + 0.07 * rect.width, y: rect.midY)
+        )
+        return p
     }
 }
 
@@ -347,6 +963,71 @@ private func flightPath(carry: Double, point: (Double) -> CGPoint, steps: Int = 
             p.addLine(to: point(carry * Double(i) / Double(steps)))
         }
     }
+}
+
+/// Alternating mow bands on a perspective fairway whose straight edges run
+/// from `cx ± bottomHalf·w` at `bottomY` to `cx ± topHalf·w` at `horizon`,
+/// spaced with the same ease-out recede the flight projections use.
+private func perspectiveMowBands(cx: CGFloat, w: CGFloat, horizon: CGFloat, bottomY: CGFloat,
+                                 bottomHalf: CGFloat, topHalf: CGFloat) -> some View {
+    let bands = 8
+    let y: (CGFloat) -> CGFloat = { t in bottomY + (horizon - bottomY) * (1 - pow(1 - t, 2)) }
+    let half: (CGFloat) -> CGFloat = { yy in
+        let f = (yy - horizon) / (bottomY - horizon)
+        return w * (topHalf + (bottomHalf - topHalf) * f)
+    }
+    return Path { p in
+        for k in stride(from: 0, to: bands, by: 2) {
+            let y0 = y(CGFloat(k) / CGFloat(bands))
+            let y1 = y(CGFloat(k + 1) / CGFloat(bands))
+            p.move(to: CGPoint(x: cx - half(y0), y: y0))
+            p.addLine(to: CGPoint(x: cx - half(y1), y: y1))
+            p.addLine(to: CGPoint(x: cx + half(y1), y: y1))
+            p.addLine(to: CGPoint(x: cx + half(y0), y: y0))
+            p.closeSubpath()
+        }
+    }
+    .fill(.white.opacity(0.06))
+}
+
+#Preview("Front") {
+    var swing = SwingModel()
+    swing.faceAngle = 3
+    swing.clubPath = -2
+    return FrontFlightView(swing: swing)
+        .frame(height: 300)
+        .padding()
+}
+
+#Preview("Down the Line") {
+    var swing = SwingModel()
+    swing.faceAngle = 3
+    swing.clubPath = -2
+    return DownLineFlightView(swing: swing)
+        .frame(height: 300)
+        .padding()
+}
+
+#Preview("Side") {
+    SideTrajectoryView(swing: SwingModel())
+        .frame(height: 300)
+        .padding()
+}
+
+#Preview("Club Face") {
+    @Previewable @State var leftHanded = false
+    var swing = SwingModel()
+    swing.faceAngle = 6
+    return ClubFaceView(swing: swing, leftHanded: $leftHanded)
+        .frame(height: 300)
+        .padding()
+}
+
+#Preview("Club Face (Lefty)") {
+    @Previewable @State var leftHanded = true
+    ClubFaceView(swing: SwingModel(), leftHanded: $leftHanded)
+        .frame(height: 300)
+        .padding()
 }
 
 private extension View {

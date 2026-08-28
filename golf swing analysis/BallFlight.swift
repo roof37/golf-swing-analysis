@@ -38,8 +38,7 @@ struct BallFlight {
     }
 
     /// Face-to-path: the difference that tilts the spin axis and curves the ball.
-    /// Positive = face open to the path → curves right (fade/slice).
-    /// Negative = face closed to the path → curves left (draw/hook).
+    /// Positive curves right; negative curves left.
     var faceToPath: Double {
         faceAngle - clubPath
     }
@@ -49,30 +48,43 @@ struct BallFlight {
 
 extension BallFlight {
 
-    /// Where the ball starts relative to target.
-    enum StartSide: String {
-        case left = "Pull"
-        case straight = "Straight"
-        case right = "Push"
+    enum Direction: String, Codable {
+        case left, straight, right
+
+        var displayName: String { rawValue.capitalized }
     }
 
-    /// How the ball curves in the air.
-    enum Curve {
-        case draw      // gentle right-to-left (RH)
-        case hook      // strong right-to-left
-        case straight
-        case fade      // gentle left-to-right (RH)
-        case slice     // strong left-to-right
+    enum CurveMagnitude: String, Codable {
+        case none, slight, large
+    }
 
-        var label: String {
-            switch self {
-            case .draw: return "Draw"
-            case .hook: return "Hook"
-            case .straight: return "Straight"
-            case .fade: return "Fade"
-            case .slice: return "Slice"
-            }
-        }
+    /// The curriculum's authoritative three-by-three ball-flight matrix.
+    enum Pattern: String, Codable, CaseIterable {
+        case pullHook = "Pull Hook"
+        case pull = "Pull"
+        case pullSlice = "Pull Slice"
+        case hook = "Hook"
+        case straight = "Straight"
+        case slice = "Slice"
+        case pushHook = "Push Hook"
+        case push = "Push"
+        case pushSlice = "Push Slice"
+    }
+
+    /// A single, reusable vocabulary for the observable parts of a shot.
+    struct Classification: Equatable {
+        let startDirection: Direction
+        let curveDirection: Direction
+        let curveMagnitude: CurveMagnitude
+        let finishDirection: Direction
+        let pattern: Pattern
+
+        var shotName: String { pattern.rawValue }
+
+        var startDescription: String { startDirection == .straight ? "Starts on line" : "Starts \(startDirection.rawValue)" }
+        var curveDescription: String { curveDirection == .straight ? "Flies straight" : "Curves \(curveDirection.rawValue)" }
+        var finishDescription: String { finishDirection == .straight ? "Finishes near target" : "Finishes \(finishDirection.rawValue)" }
+        var summary: String { "\(startDescription) · \(curveDescription) · \(finishDescription)" }
     }
 
     /// Degrees of start direction within which we call the start "straight".
@@ -82,30 +94,69 @@ extension BallFlight {
     /// Face-to-path magnitude beyond which a curve becomes a hook/slice.
     static let severeCurveThreshold = 5.0
 
-    var startSide: StartSide {
-        if startDirection > BallFlight.startDeadband { return .right }
-        if startDirection < -BallFlight.startDeadband { return .left }
-        return .straight
+    var classification: Classification {
+        BallFlight.classify(
+            startAngle: startDirection,
+            curveAmount: faceToPath,
+            finishAmount: startDirection + faceToPath
+        )
     }
 
-    var curve: Curve {
-        let f = faceToPath
-        if f > BallFlight.severeCurveThreshold { return .slice }
-        if f > BallFlight.curveDeadband { return .fade }
-        if f < -BallFlight.severeCurveThreshold { return .hook }
-        if f < -BallFlight.curveDeadband { return .draw }
-        return .straight
-    }
+    var shotName: String { classification.shotName }
 
-    /// A human-readable name for the shot, e.g. "Pull Draw" or "Push Fade".
-    var shotName: String {
-        let curveLabel = curve.label
-        switch startSide {
-        case .straight:
-            return curve == .straight ? "Straight" : curveLabel
-        case .left, .right:
-            if curve == .straight { return startSide.rawValue }
-            return "\(startSide.rawValue) \(curveLabel)"
+    /// Maps observed start and curve directions to exactly one curriculum term.
+    static func classifyShot(startDirection: Direction, curveDirection: Direction) -> Pattern {
+        switch (startDirection, curveDirection) {
+        case (.left, .left): return .pullHook
+        case (.left, .straight): return .pull
+        case (.left, .right): return .pullSlice
+        case (.straight, .left): return .hook
+        case (.straight, .straight): return .straight
+        case (.straight, .right): return .slice
+        case (.right, .left): return .pushHook
+        case (.right, .straight): return .push
+        case (.right, .right): return .pushSlice
         }
     }
+
+    static func classify(startAngle: Double, curveAmount: Double, finishAmount: Double) -> Classification {
+        func direction(_ value: Double, deadband: Double) -> Direction {
+            if value > deadband { return .right }
+            if value < -deadband { return .left }
+            return .straight
+        }
+
+        let curveDirection = direction(curveAmount, deadband: curveDeadband)
+        let magnitude: CurveMagnitude
+        if curveDirection == .straight { magnitude = .none }
+        else if abs(curveAmount) > severeCurveThreshold { magnitude = .large }
+        else { magnitude = .slight }
+
+        let startDirection = direction(startAngle, deadband: startDeadband)
+        return Classification(
+            startDirection: startDirection,
+            curveDirection: curveDirection,
+            curveMagnitude: magnitude,
+            finishDirection: direction(finishAmount, deadband: 1),
+            pattern: classifyShot(startDirection: startDirection, curveDirection: curveDirection)
+        )
+    }
 }
+
+// MARK: - Curriculum-ready configuration
+
+enum ShotLabMode: Codable { case explore, course }
+enum ShotLabFocus: Codable { case startDirection, curvature, flightPatterns, clubFace, clubPath, faceToPath, launch, strike }
+enum ShotParameter: String, Codable, Hashable { case clubFace, clubPath, attackAngle, dynamicLoft, strike, swingSpeed }
+
+struct ShotLabConfiguration {
+    var mode: ShotLabMode = .explore
+    var focus: ShotLabFocus?
+    var lockedParameters: Set<ShotParameter> = []
+    var visibleParameters: Set<ShotParameter> = Set(ShotParameter.allCases)
+    var initialState: SwingModel?
+
+    static let explore = ShotLabConfiguration()
+}
+
+extension ShotParameter: CaseIterable {}

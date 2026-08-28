@@ -19,14 +19,13 @@ struct SwingExplanation {
     var bodyToDelivery: [String] {
         var lines: [String] = []
 
-        // Path: compare the shoulder and hip contributions, name the dominant one.
-        let shoulderEffect = -bio.shoulderRotation * 0.14   // open shoulders → out-to-in
-        let hipEffect = (bio.hipRotation - 40) * 0.08       // cleared hips → in-to-out
-        if abs(shoulderEffect) >= abs(hipEffect) {
-            let sh = bio.shoulderRotation
-            lines.append("Shoulders \(open(sh)) at impact throw the club \(sh > 0 ? "out-to-in (over the top)" : "in-to-out") → path \(deg(bio.clubPath)).")
+        // Path: over-the-top (thorax outracing the sequence) vs pelvis clearance.
+        if bio.overTheTop > 3 {
+            lines.append("The thorax is \(deg(bio.thoraxRotation)) open but the sequence only earned \(Int(bio.earnedThorax))° — the extra came early, throwing the club out-to-in → path \(deg(bio.clubPath)).")
+        } else if bio.pelvisRotation >= 38 {
+            lines.append("A cleared pelvis (\(deg(bio.pelvisRotation)) open) with the sequence delivering the thorax on time swings the club from the inside → path \(deg(bio.clubPath)).")
         } else {
-            lines.append("Cleared hips (\(deg(bio.hipRotation)) open) give room to swing in-to-out → path \(deg(bio.clubPath)).")
+            lines.append("A stalled pelvis (\(deg(bio.pelvisRotation)) open) crowds the arms and drags the club across the ball → path \(deg(bio.clubPath)).")
         }
 
         // Face from lead wrist.
@@ -35,11 +34,19 @@ struct SwingExplanation {
         let faceWord = w < -1 ? "closes" : w > 1 ? "opens" : "squares"
         lines.append("A \(wristWord) lead wrist \(faceWord) the face → \(deg(bio.faceAngle)).")
 
-        // Angle of attack from weight + spine tilt.
-        lines.append("Weight \(Int(bio.weightShift))% on the lead foot with \(deg(bio.spineTilt)) of tilt → attack \(deg(bio.angleOfAttack)).")
+        // Low point: one location drives attack, lean, and loft together.
+        let lp = bio.lowPointPastBall
+        let lpWord = lp > 1 ? "past the ball — a descending, ball-first strike"
+            : lp < -1 ? "before the ball — catching it on the upswing"
+            : "right at the ball"
+        lines.append("\(Int(bio.leadPressure))% lead pressure and \(deg(bio.sideBend)) of side bend bottom the arc \(lpWord) → attack \(deg(bio.angleOfAttack)), lean \(deg(bio.shaftLean)), loft \(String(format: "%.1f°", bio.dynamicLoft)).")
 
-        // Speed.
-        lines.append("Hip speed and a \(Int(bio.sequenceEfficiency))% kinematic sequence deliver \(Int(bio.swingSpeed)) mph.")
+        // Speed: coil × sequence — multiplicative, not additive.
+        if bio.transitionSequence >= 70 {
+            lines.append("\(Int(bio.separation))° of separation cashed in through a \(Int(bio.transitionSequence))% sequence → \(Int(bio.swingSpeed)) mph.")
+        } else {
+            lines.append("A \(Int(bio.transitionSequence))% sequence casts the coil away — \(Int(bio.separation))° of separation only delivers \(Int(bio.swingSpeed)) mph.")
+        }
 
         return lines
     }
@@ -76,12 +83,6 @@ struct SwingExplanation {
 
     private func deg(_ v: Double) -> String { String(format: "%+.1f°", v) }
 
-    private func open(_ v: Double) -> String {
-        if v > 1 { return "\(deg(v)) open" }
-        if v < -1 { return "\(deg(v)) closed" }
-        return "square"
-    }
-
     private var startWord: String {
         if swing.launchDirection > BallFlight.startDeadband { return "right of target" }
         if swing.launchDirection < -BallFlight.startDeadband { return "left of target" }
@@ -89,11 +90,9 @@ struct SwingExplanation {
     }
 
     private var curveWord: String {
-        switch swing.ballFlight.curve {
-        case .slice: return "slice hard right"
-        case .fade: return "fade gently right"
-        case .draw: return "draw gently left"
-        case .hook: return "hook hard left"
+        switch swing.flightClassification.curveDirection {
+        case .right: return "curve right"
+        case .left: return "curve left"
         case .straight: return "hold a straight line"
         }
     }

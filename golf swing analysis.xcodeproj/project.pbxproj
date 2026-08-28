@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		9C447CEF2FFB1B3900C0AB87 /* Scenery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C447CEE2FFB1B3900C0AB87 /* Scenery.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		9CEABA762FF07C1B007EB4C3 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +28,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		9C447CEE2FFB1B3900C0AB87 /* Scenery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Scenery.swift; sourceTree = "<group>"; };
 		9CEABA682FF07C1A007EB4C3 /* golf swing analysis.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "golf swing analysis.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9CEABA752FF07C1B007EB4C3 /* golf swing analysisTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "golf swing analysisTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		9CEABA7F2FF07C1B007EB4C3 /* golf swing analysisUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "golf swing analysisUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -79,6 +84,7 @@
 				9CEABA782FF07C1B007EB4C3 /* golf swing analysisTests */,
 				9CEABA822FF07C1B007EB4C3 /* golf swing analysisUITests */,
 				9CEABA692FF07C1A007EB4C3 /* Products */,
+				9C447CEE2FFB1B3900C0AB87 /* Scenery.swift */,
 			);
 			sourceTree = "<group>";
 		};
@@ -236,6 +242,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9C447CEF2FFB1B3900C0AB87 /* Scenery.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

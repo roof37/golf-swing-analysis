@@ -24,6 +24,7 @@ struct SwingModel: Codable, Equatable {
     var dynamicLoft: Double = 14     // deg, delivered loft at impact
     var swingSpeed: Double = 95      // mph, clubhead speed
     var strikeOffset: Double = 0     // mm off center face, toe(+)/heel(-)
+    var strikeHeightOffset: Double = 0 // mm off center face, high(+)/low(-)
     var shaftLean: Double = 5        // deg, forward lean (de-lofts/lowers spin)
     var lieAngle: Double = 0         // deg, upright(+)/flat(-) at impact
 
@@ -53,9 +54,8 @@ struct SwingModel: Codable, Equatable {
             - 0.6 * lieAngle
     }
 
-    /// Spin-axis tilt (deg). Positive = tilted right (fade/slice), negative =
-    /// tilted left (draw/hook). Driven by face-to-path plus gear effect from an
-    /// off-center strike (toe strike adds draw spin, heel adds fade spin).
+    /// Spin-axis tilt (deg). Positive curves right; negative curves left.
+    /// Driven by face-to-path plus gear effect from an off-center strike.
     var spinAxis: Double {
         let raw = 0.9 * faceToPath - 0.15 * strikeOffset
         return min(45, max(-45, raw))
@@ -77,6 +77,7 @@ struct SwingModel: Codable, Equatable {
     var smashFactor: Double {
         var smash = 1.50
         smash -= 0.004 * abs(strikeOffset)
+        smash -= 0.004 * abs(strikeHeightOffset)
         smash -= 0.006 * max(0, spinLoft - 12)
         return min(1.52, max(1.20, smash))
     }
@@ -111,28 +112,20 @@ struct SwingModel: Codable, Equatable {
 
     // MARK: Classification (gear-effect aware)
 
+    /// Observable start, curve, and finish properties, classified in one place.
+    var flightClassification: BallFlight.Classification {
+        return BallFlight.classify(
+            startAngle: launchDirection,
+            curveAmount: spinAxis,
+            finishAmount: landingOffline
+        )
+    }
+
     /// Shot shape name based on launch direction and spin-axis tilt, so an
     /// off-center strike's gear effect is reflected (unlike a pure face/path
     /// classification).
     var shotName: String {
-        let start: BallFlight.StartSide
-        if launchDirection > BallFlight.startDeadband { start = .right }
-        else if launchDirection < -BallFlight.startDeadband { start = .left }
-        else { start = .straight }
-
-        let curve: BallFlight.Curve
-        if spinAxis > BallFlight.severeCurveThreshold { curve = .slice }
-        else if spinAxis > BallFlight.curveDeadband { curve = .fade }
-        else if spinAxis < -BallFlight.severeCurveThreshold { curve = .hook }
-        else if spinAxis < -BallFlight.curveDeadband { curve = .draw }
-        else { curve = .straight }
-
-        switch start {
-        case .straight:
-            return curve == .straight ? "Straight" : curve.label
-        case .left, .right:
-            return curve == .straight ? start.rawValue : "\(start.rawValue) \(curve.label)"
-        }
+        flightClassification.shotName
     }
 }
 

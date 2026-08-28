@@ -24,37 +24,52 @@ struct Lesson: Identifiable {
 }
 
 extension Lesson {
-    /// Common shots players want to understand, ordered roughly easy → tricky.
+    /// The curriculum's complete nine-pattern ball-flight matrix.
     static let library: [Lesson] = [
+        Lesson(
+            title: "Pull Hook",
+            faceAngle: -4, clubPath: -1,
+            coaching: "Starts left and curves left."
+        ),
+        Lesson(
+            title: "Pull",
+            faceAngle: -4, clubPath: -4,
+            coaching: "Starts left with no meaningful curve."
+        ),
+        Lesson(
+            title: "Pull Slice",
+            faceAngle: -2, clubPath: -7,
+            coaching: "Starts left and curves right."
+        ),
+        Lesson(
+            title: "Hook",
+            faceAngle: -0.5, clubPath: 5,
+            coaching: "Starts straight and curves left."
+        ),
         Lesson(
             title: "Straight",
             faceAngle: 0, clubPath: 0,
-            coaching: "Face and path both point at the target, so the ball starts on line and never curves."
+            coaching: "Starts straight with no meaningful curve."
         ),
         Lesson(
-            title: "The Slice",
-            faceAngle: 6, clubPath: -4,
-            coaching: "An out-to-in path with the face wide open to it tilts the spin axis hard right — the amateur's classic miss."
+            title: "Slice",
+            faceAngle: 0.5, clubPath: -5,
+            coaching: "Starts straight and curves right."
         ),
         Lesson(
-            title: "The Pull",
-            faceAngle: -4, clubPath: -4,
-            coaching: "The face matches the out-to-in path, so the ball flies dead straight but starts left of target."
+            title: "Push Hook",
+            faceAngle: 2, clubPath: 7,
+            coaching: "Starts right and curves left."
         ),
         Lesson(
-            title: "The Push",
+            title: "Push",
             faceAngle: 4, clubPath: 4,
-            coaching: "Face and path agree going right (in-to-out), so the ball starts right and stays there."
+            coaching: "Starts right with no meaningful curve."
         ),
         Lesson(
-            title: "Power Draw",
-            faceAngle: 2, clubPath: 6,
-            coaching: "Start it right of target with an in-to-out path, face slightly closed to the path, and it curves gently back."
-        ),
-        Lesson(
-            title: "The Hook",
-            faceAngle: -6, clubPath: -1,
-            coaching: "Face slammed shut relative to the path tilts the spin axis left — the ball dives hard to the left."
+            title: "Push Slice",
+            faceAngle: 4, clubPath: -3,
+            coaching: "Starts right and curves right."
         )
     ]
 }
@@ -66,7 +81,7 @@ extension BallFlight {
     /// Why the ball starts where it does, in plain language.
     var startExplanation: String {
         let tail = "the face controls about 85% of where the ball starts."
-        switch startSide {
+        switch classification.startDirection {
         case .straight:
             return "The ball starts on target because the face is square at impact — \(tail)"
         case .right:
@@ -78,15 +93,13 @@ extension BallFlight {
 
     /// Why the ball curves the way it does, in plain language.
     var curveExplanation: String {
-        switch curve {
+        switch classification.curveDirection {
         case .straight:
             return "It flies straight because the face is square to the path — there's nothing to tilt the spin axis."
-        case .draw, .hook:
-            let strength = curve == .hook ? "a lot" : "gently"
-            return "It curves \(strength) to the left because the face is closed relative to the path (\(String(format: "%+.1f", faceToPath))°), tilting the spin axis left."
-        case .fade, .slice:
-            let strength = curve == .slice ? "a lot" : "gently"
-            return "It curves \(strength) to the right because the face is open relative to the path (\(String(format: "%+.1f", faceToPath))°), tilting the spin axis right."
+        case .left:
+            return "It curves left because the face is closed relative to the path (\(String(format: "%+.1f", faceToPath))°), tilting the spin axis left."
+        case .right:
+            return "It curves right because the face is open relative to the path (\(String(format: "%+.1f", faceToPath))°), tilting the spin axis right."
         }
     }
 }
