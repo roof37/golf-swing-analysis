@@ -117,6 +117,85 @@ extension SwingModel {
     }
 }
 
+// MARK: - Standard-deviation dispersion ellipse
+
+/// A dispersion ellipse in **(offline, carry) yard-space**: `center` in yards,
+/// `semiMajor` / `semiMinor` in yards along the cloud's principal axes, and
+/// `rotation` the angle of the major axis measured from the +offline axis toward
+/// +carry. Convert to screen points at draw time (the top-down view scales
+/// offline and carry by different factors, so the ellipse must be re-fitted in
+/// screen space rather than scaled naively).
+///
+/// **This is a standard-deviation-multiple ellipse, not a χ² confidence region.**
+/// It is the principal-axis ellipse of the sample covariance with half-axes
+/// `k · √λ` (λ = covariance eigenvalues). Read along any single axis those
+/// half-axes are exactly ±1σ (k = 1) and ±2σ (k = 2), which is why they're
+/// labelled with the familiar 1-D "68%" / "95%". But the *area* of the k = 1
+/// ellipse holds only ≈ 1 − e^(−1/2) ≈ 39% of a bivariate-normal cloud, and the
+/// k = 2 ellipse ≈ 1 − e^(−2) ≈ 86%. A true 2-D 68% / 95% region would inflate
+/// the axes by √χ²₂,p (≈ 1.52 and ≈ 2.45). We deliberately draw the plain
+/// k = 1 / k = 2 ellipse because the study frames this as "one and two standard
+/// deviations of shot scatter"; the χ² distinction is noted here so the shaded
+/// area isn't misread as a probability contour.
+struct DispersionEllipse {
+    var centerOffline: Double
+    var centerCarry: Double
+    var semiMajor: Double
+    var semiMinor: Double
+    var rotation: Angle
+}
+
+extension DispersionResult {
+
+    /// The k = 1 and k = 2 standard-deviation ellipses for this shot cloud in
+    /// yard-space, or `nil` when the cloud is too small (< 3 shots) or too tight
+    /// (essentially a deterministic swing) to fit a non-degenerate ellipse.
+    /// See `DispersionEllipse` for what "σ ellipse" means here — it is an
+    /// SD-multiple approximation, not a chi-square confidence region.
+    var sigmaEllipses: (oneSigma: DispersionEllipse, twoSigma: DispersionEllipse)? {
+        guard samples.count >= 3 else { return nil }
+        let n = Double(samples.count)
+        let mo = samples.reduce(0) { $0 + $1.offline } / n
+        let mc = samples.reduce(0) { $0 + $1.carry } / n
+
+        var vxx = 0.0, vyy = 0.0, vxy = 0.0   // covariance of (offline, carry)
+        for s in samples {
+            let dx = s.offline - mo
+            let dy = s.carry - mc
+            vxx += dx * dx
+            vyy += dy * dy
+            vxy += dx * dy
+        }
+        vxx /= n; vyy /= n; vxy /= n
+
+        // Eigen-decomposition of the symmetric 2×2 covariance [[vxx, vxy],[vxy, vyy]].
+        let trace = vxx + vyy
+        let det = vxx * vyy - vxy * vxy
+        let disc = max(0, trace * trace / 4 - det)
+        let root = disc.squareRoot()
+        let lambdaMajor = trace / 2 + root
+        let lambdaMinor = trace / 2 - root
+
+        // Degenerate: variance under ~0.1 yd along the major axis → no ellipse.
+        guard lambdaMajor.isFinite, lambdaMajor > 0.01 else { return nil }
+
+        let a = lambdaMajor.squareRoot()
+        let b = max(lambdaMinor, 0).squareRoot()
+        let angle = abs(vxy) > 1e-12
+            ? atan2(lambdaMajor - vxx, vxy)
+            : (vxx >= vyy ? 0 : Double.pi / 2)
+
+        func ellipse(k: Double) -> DispersionEllipse {
+            DispersionEllipse(centerOffline: mo,
+                              centerCarry: mc,
+                              semiMajor: k * a,
+                              semiMinor: k * max(b, a * 0.02),   // keep a sliver of width if collinear
+                              rotation: .radians(angle))
+        }
+        return (ellipse(k: 1), ellipse(k: 2))
+    }
+}
+
 // MARK: - Reusable top-down trajectory (for A/B overlay)
 
 struct TrajectoryShape: Shape {

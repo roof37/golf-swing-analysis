@@ -41,6 +41,7 @@ struct ContentView: View {
     @State private var previousShotName: String?
     @State private var changeTask: Task<Void, Never>?
     @State private var variablesExpanded = false
+    @State private var dispersionVariability: Double = 0.4
 
     private var swing: SwingModel { lab.swing }
 
@@ -107,6 +108,47 @@ struct ContentView: View {
                 ForEach(Perspective.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
+
+            if perspective == .top {
+                consistencyControl
+            }
+        }
+    }
+
+    /// Drives the dispersion scatter shown in the top-down view: how loosely the
+    /// simulated repeats of this swing are jittered.
+    private var consistencyControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Shot Consistency")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(consistencyDescription)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            Slider(value: $dispersionVariability, in: 0.05...1)
+
+            HStack {
+                Text("Tour Pro")
+                Spacer()
+                Text("Loose")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+        .padding(12)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.insetRadius))
+    }
+
+    private var consistencyDescription: String {
+        switch dispersionVariability {
+        case ..<0.25: return "Very tight"
+        case ..<0.5: return "Tight"
+        case ..<0.75: return "Loose"
+        default: return "Very loose"
         }
     }
 
@@ -242,7 +284,7 @@ struct ContentView: View {
     @ViewBuilder
     private var perspectiveView: some View {
         switch perspective {
-        case .top: RangeView(swing: swing)
+        case .top: RangeView(swing: swing, variability: dispersionVariability)
         case .downLine: DownLineFlightView(swing: swing)
         case .side: SideTrajectoryView(swing: swing)
         case .face: ClubFaceView(swing: swing, leftHanded: $lab.leftHanded)
@@ -797,10 +839,21 @@ struct ParameterSlider: View {
 
 struct RangeView: View {
     let swing: SwingModel
+    var variability: Double = 0.4
+
+    /// The last simulated cloud of repeats of this swing — samples plus the
+    /// descriptive stats and σ-ellipses derived from them. Regenerated only when
+    /// the swing or the consistency setting settles (see `scheduleRegenerate`),
+    /// not on every re-render, so the dots stay put while unrelated UI moves.
+    @State private var dispersionResult: DispersionResult?
+
+    /// Debounce handle for `scheduleRegenerate`, mirroring `ContentView`'s
+    /// `changeTask`.
+    @State private var resampleTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { geo in
-            let g = RangeGeometry(swing: swing, size: geo.size)
+            let g = RangeGeometry(swing: swing, size: geo.size, dispersion: dispersionResult)
 
             ZStack {
                 rangeBase(g)
@@ -808,7 +861,7 @@ struct RangeView: View {
                 fairway(g)
                 green(g)
                 yardGrid(g)
-                targetWindow(g)
+                dispersionScatter(g)
 
                 line(from: g.point(distance: 0, lateral: 0), to: g.point(distance: g.maxYards, lateral: 0))
                     .stroke(.white.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [5, 6]))
@@ -832,7 +885,29 @@ struct RangeView: View {
 
                 resultPill(g)
                 legend
+                ellipseLegend
             }
+        }
+        .onAppear { regenerateSamples() }
+        .onChange(of: swing) { scheduleRegenerate() }
+        .onChange(of: variability) { scheduleRegenerate() }
+        .onDisappear { resampleTask?.cancel() }
+    }
+
+    private func regenerateSamples() {
+        dispersionResult = swing.dispersion(count: 60, variability: variability)
+    }
+
+    /// Debounced resample: redraw the cloud only once the slider / parameter has
+    /// been still for ~180 ms, so dragging "Shot Consistency" (or a swing slider)
+    /// doesn't re-randomize 60 shots on every intermediate value. Follows the
+    /// cancel-and-restart `Task` pattern used for `swing.shotName` in `ContentView`.
+    private func scheduleRegenerate() {
+        resampleTask?.cancel()
+        resampleTask = Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { regenerateSamples() }
         }
     }
 
@@ -942,40 +1017,103 @@ struct RangeView: View {
         .position(x: center.x, y: center.y - 4)
     }
 
-    private func targetWindow(_ g: RangeGeometry) -> some View {
+    /// Live Monte-Carlo dispersion: one dot per simulated repeat of this swing,
+    /// colored by how far offline it finished, over the 1σ / 2σ scatter ellipses.
+    ///
+    /// The ellipses are the standard-deviation-multiple construction from
+    /// `DispersionEllipse` — the k = 1 / k = 2 principal-axis ellipses of the
+    /// sample covariance, projected into screen space. They read as ±1σ / ±2σ
+    /// along any axis (hence the "68%" / "95%" tags) but their shaded *areas*
+    /// enclose only ≈ 39% / ≈ 86% of the cloud; they are an approximation for
+    /// teaching "spread", not χ² confidence regions. They replace the old fixed
+    /// ±target-window box as the scatter's context reference.
+    private func dispersionScatter(_ g: RangeGeometry) -> some View {
+        let total = g.dispersionSamples.count
+        let inside = g.dispersionSamples.filter { abs($0.offline) <= g.targetHalfWidth }.count
+        let insidePercent = total > 0 ? Int((Double(inside) / Double(total) * 100).rounded()) : 0
+
+        let ellipses: (one: ProjectedEllipse, two: ProjectedEllipse)? = dispersionResult?.sigmaEllipses.flatMap {
+            guard let one = g.project($0.oneSigma), let two = g.project($0.twoSigma) else { return nil }
+            return (one, two)
+        }
+
         let target = g.point(distance: g.targetDistance, lateral: 0)
-        let left = g.point(distance: g.targetDistance, lateral: -g.targetHalfWidth)
-        let right = g.point(distance: g.targetDistance, lateral: g.targetHalfWidth)
-        let near = g.point(distance: max(0, g.targetDistance - 18), lateral: 0)
-        let far = g.point(distance: min(g.maxYards, g.targetDistance + 18), lateral: 0)
-        let width = max(54, abs(right.x - left.x))
-        let height = max(26, abs(near.y - far.y))
+        let pillY = ellipses.map { $0.two.center.y - $0.two.verticalExtent - 26 } ?? (target.y - 34)
 
         return ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Theme.good.opacity(0.16))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Theme.good.opacity(0.82), lineWidth: 1.8)
-                }
-                .frame(width: width, height: height)
-                .position(target)
-
-            Path { path in
-                path.move(to: CGPoint(x: target.x - width * 0.38, y: target.y))
-                path.addLine(to: CGPoint(x: target.x + width * 0.38, y: target.y))
-                path.move(to: CGPoint(x: target.x, y: target.y - height * 0.32))
-                path.addLine(to: CGPoint(x: target.x, y: target.y + height * 0.32))
+            if let ellipses {
+                // 2σ under 1σ, both under the dots. Labelled by `ellipseLegend`
+                // in the corner, not with floating tags that collide with the pin.
+                ellipseShape(ellipses.two, fill: Theme.warn.opacity(0.09),
+                             stroke: Theme.warn.opacity(0.5), dashed: true)
+                ellipseShape(ellipses.one, fill: Theme.good.opacity(0.14),
+                             stroke: Theme.good.opacity(0.55), dashed: false)
             }
-            .stroke(.white.opacity(0.42), lineWidth: 1)
 
-            Text("±\(Int(g.targetHalfWidth)) yd")
-                .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                .foregroundStyle(Theme.good)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(.thinMaterial, in: Capsule())
-                .position(x: target.x, y: target.y - height / 2 - 10)
+            ForEach(g.dispersionSamples) { sample in
+                Circle()
+                    .fill(dotColor(sample, g))
+                    .frame(width: 5, height: 5)
+                    .position(g.clampedDotPoint(carry: sample.carry, offline: sample.offline))
+            }
+
+            if total > 0 {
+                Text("\(insidePercent)% inside ±\(Int(g.targetHalfWidth)) yd · \(total) shots")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(.thinMaterial, in: Capsule())
+                    .position(x: target.x, y: max(14, pillY))
+            }
+        }
+    }
+
+    private func ellipseShape(_ e: ProjectedEllipse, fill: Color, stroke: Color, dashed: Bool) -> some View {
+        Ellipse()
+            .fill(fill)
+            .overlay(
+                Ellipse().stroke(stroke, style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 3] : []))
+            )
+            .frame(width: e.semiMajor * 2, height: e.semiMinor * 2)
+            .rotationEffect(e.rotation)
+            .position(e.center)
+    }
+
+    /// Corner key for the scatter ellipses. Fixed position (bottom-trailing, the
+    /// mirror of `legend`) so it never stacks on top of the pin or the results
+    /// pill the way the old per-ellipse floating tags did.
+    @ViewBuilder
+    private var ellipseLegend: some View {
+        if dispersionResult?.sigmaEllipses != nil {
+            HStack(spacing: 8) {
+                legendSwatch(Theme.good, "68%")
+                legendSwatch(Theme.warn, "95%")
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 6))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+            .padding(8)
+        }
+    }
+
+    private func legendSwatch(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color.opacity(0.35))
+                .overlay(Circle().stroke(color, lineWidth: 1))
+                .frame(width: 8, height: 8)
+            Text(text).font(.system(size: 9, weight: .medium))
+        }
+    }
+
+    /// Same thresholds as `resultColor` / `resultText`, applied per sample.
+    private func dotColor(_ sample: ShotSample, _ g: RangeGeometry) -> Color {
+        switch abs(sample.offline) {
+        case ...g.targetHalfWidth: return Theme.good
+        case ...(g.targetHalfWidth * 2): return Theme.warn
+        default: return Theme.bad
         }
     }
 
@@ -1134,17 +1272,38 @@ struct RangeView: View {
     }
 }
 
+/// A `DispersionEllipse` after projection into screen points: `center`,
+/// `semiMajor` / `semiMinor` (points) along the re-fitted principal axes,
+/// `rotation` of the major axis in screen space, and `verticalExtent` (the
+/// half-height of the ellipse's bounding box, for placing labels clear of it).
+private struct ProjectedEllipse {
+    var center: CGPoint
+    var semiMajor: CGFloat
+    var semiMinor: CGFloat
+    var rotation: Angle
+    var verticalExtent: CGFloat
+}
+
 /// Maps real yards (downrange and lateral) onto the view, scaled to the shot.
 private struct RangeGeometry {
     let swing: SwingModel
     let size: CGSize
+    var dispersion: DispersionResult? = nil
+
+    /// The individual sampled shots — still drawn at their real positions.
+    var dispersionSamples: [ShotSample] { dispersion?.samples ?? [] }
 
     var carry: Double { max(swing.carryDistance, 1) }
     var offline: Double { swing.landingOffline }
 
-    /// Top of the range, rounded up to a tidy number above the carry.
+    /// Top of the range, rounded up to the nearest 50. Sized from the shot's own
+    /// carry and the dispersion *statistics* (`meanCarry + 3σ` ≈ 99.7% of shots),
+    /// never the raw sample max: a single noisy order statistic from 60 fresh
+    /// random draws jumps ~50 yd between regenerations and makes the whole scene
+    /// (pin, flight, grid) appear to slide and zoom.
     var maxYards: Double {
-        let target = carry * 1.12
+        let statBound = dispersion.map { $0.meanCarry + 3 * $0.carryStd } ?? 0
+        let target = max(carry, statBound) * 1.12
         return (target / 50).rounded(.up) * 50
     }
 
@@ -1158,9 +1317,12 @@ private struct RangeGeometry {
 
     var targetHalfWidth: Double { 10 }
 
-    /// Lateral span (yards) that fills half the width, with headroom for the curve.
+    /// Lateral span (yards) that fills half the width: curve headroom plus the
+    /// dispersion spread as `|meanOffline| + 3σ` — again a stable statistic, not
+    /// the raw sample max, so the scale doesn't twitch on every resample.
     private var maxLateral: Double {
-        max(35, abs(offline) * 1.4)
+        let statBound = dispersion.map { abs($0.meanOffline) + 3 * $0.offlineStd * 1.15 } ?? 0
+        return max(35, abs(offline) * 1.4, statBound)
     }
 
     private var teeY: CGFloat { size.height - 18 }
@@ -1176,6 +1338,73 @@ private struct RangeGeometry {
         let up = CGFloat(d / maxYards) * (teeY - topY)
         let xScale = (size.width / 2 - 16) / CGFloat(maxLateral)
         return CGPoint(x: teeX + CGFloat(lateral) * xScale, y: teeY - up)
+    }
+
+    /// Screen point for a dispersion dot, clamped just inside the plot. The scale
+    /// is now fixed to the dispersion stats, so a lone 3σ+ outlier is pinned to
+    /// the edge instead of being allowed to force the whole range to re-expand.
+    func clampedDotPoint(carry d: Double, offline lateral: Double) -> CGPoint {
+        let raw = point(distance: d, lateral: lateral)
+        let m: CGFloat = 6
+        return CGPoint(
+            x: min(max(raw.x, m), size.width - m),
+            y: min(max(raw.y, topY + m), teeY - m)
+        )
+    }
+
+    /// Projects a yard-space `DispersionEllipse` into screen points.
+    ///
+    /// `point(distance:lateral:)` scales lateral (offline) and downrange (carry)
+    /// yards by *different* factors, so scaling the ellipse's semi-axes directly
+    /// would shear it. Instead the ellipse's covariance is reconstructed in
+    /// yards, pushed through the (diagonal, y-flipped) screen map — `C' = S·C·Sᵀ`
+    /// with `S = diag(xScale, -yScale)` — and its principal axes re-extracted in
+    /// screen space. Returns `nil` for a degenerate cloud or bad geometry.
+    func project(_ e: DispersionEllipse) -> ProjectedEllipse? {
+        let xScale = Double((size.width / 2 - 16)) / maxLateral        // pts per offline yard
+        let yScale = Double(teeY - topY) / maxYards                    // pts per carry yard
+        guard xScale.isFinite, yScale.isFinite, xScale > 0, yScale > 0 else { return nil }
+
+        // Covariance of the yard-space ellipse: C = R(θ)·diag(a², b²)·R(θ)ᵀ.
+        let a = e.semiMajor, b = e.semiMinor
+        let t = e.rotation.radians
+        let cosT = cos(t), sinT = sin(t)
+        let cxx = a * a * cosT * cosT + b * b * sinT * sinT
+        let cyy = a * a * sinT * sinT + b * b * cosT * cosT
+        let cxy = (a * a - b * b) * sinT * cosT
+
+        // Push through the screen map (the y-flip only flips the cross term).
+        let pxx = xScale * xScale * cxx
+        let pyy = yScale * yScale * cyy
+        let pxy = -xScale * yScale * cxy
+
+        // Eigen-decomposition of the symmetric 2×2 [[pxx, pxy],[pxy, pyy]].
+        let trace = pxx + pyy
+        let det = pxx * pyy - pxy * pxy
+        let disc = max(0, trace * trace / 4 - det)
+        let root = disc.squareRoot()
+        let lambdaMajor = trace / 2 + root
+        let lambdaMinor = trace / 2 - root
+
+        let floor = 0.25   // pts² ≈ (0.5 pt)²; below this the ellipse is a dot
+        guard lambdaMajor.isFinite, lambdaMajor > floor else { return nil }
+
+        let semiMajor = lambdaMajor.squareRoot()
+        let semiMinor = max(lambdaMinor, floor).squareRoot()
+        let angle = abs(pxy) > 1e-9
+            ? atan2(lambdaMajor - pxx, pxy)
+            : (pxx >= pyy ? 0 : Double.pi / 2)
+
+        let vExtent = (semiMajor * semiMajor * sin(angle) * sin(angle)
+                       + semiMinor * semiMinor * cos(angle) * cos(angle)).squareRoot()
+
+        return ProjectedEllipse(
+            center: point(distance: e.centerCarry, lateral: e.centerOffline),
+            semiMajor: CGFloat(semiMajor),
+            semiMinor: CGFloat(semiMinor),
+            rotation: .radians(angle),
+            verticalExtent: CGFloat(vExtent)
+        )
     }
 
     func labelPoint(near point: CGPoint, yOffset: CGFloat) -> CGPoint {

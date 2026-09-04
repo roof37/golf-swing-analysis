@@ -20,7 +20,7 @@ enum Perspective: String, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
-        case .top: return "Bird's-eye: blue shows the start line, orange shows the actual flight, and green marks the target window."
+        case .top: return "Bird's-eye: blue shows the start line, orange shows the actual flight, and the scatter dots show where this same swing would land over many repeats."
         case .downLine: return "Front view: target, path, and face lines show where it all points."
         case .side: return "Side profile: launch angle, apex height, carry, and descent change with loft, attack, speed, and spin."
         case .face: return "Looking down at the ball: tap Swing to watch the face open then close through impact."
