@@ -6,6 +6,8 @@
 //
 
 import Testing
+import Foundation
+import simd
 @testable import golf_swing_analysis
 
 @MainActor
@@ -105,6 +107,29 @@ struct golf_swing_analysisTests {
         let impactTime = output.frameTimes[Int(SwingEngine.Output.impactProgress * frameCount)]
         #expect(impactTime - topTime < topTime * 0.6)
         #expect(output.duration > 1.0)
+    }
+
+    /// The Club-focus ground arrow: club path is the heading about vertical
+    /// (+z, right of target) and angle of attack is the vertical tilt (+y up),
+    /// recoverable from the returned world vector with the same `atan2`
+    /// convention `SwingPlane` uses for `clubPath` / `attackAngle`.
+    @Test func groundArrowVectorEncodesPathAndAttack() async throws {
+        let neutral = ClubFocusGeometry.groundArrowVector(path: 0, attack: 0)
+        #expect(abs(neutral.x - 1) < 1e-9)
+        #expect(abs(neutral.y) < 1e-9)
+        #expect(abs(neutral.z) < 1e-9)
+
+        for path in [-9.0, -3.0, 4.0, 12.0] {
+            for attack in [-6.0, -1.0, 0.0, 5.0] {
+                let v = ClubFocusGeometry.groundArrowVector(path: path, attack: attack)
+                #expect(abs(simd_length(v) - 1) < 1e-9)
+
+                let recoveredPath = atan2(v.z, v.x) * 180 / .pi
+                let recoveredAttack = atan2(v.y, sqrt(v.x * v.x + v.z * v.z)) * 180 / .pi
+                #expect(abs(recoveredPath - path) < 1e-6)
+                #expect(abs(recoveredAttack - attack) < 1e-6)
+            }
+        }
     }
 
     @Test func mechanicsOutputCanProduceShotModel() async throws {

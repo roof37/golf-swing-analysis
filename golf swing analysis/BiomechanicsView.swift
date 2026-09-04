@@ -13,6 +13,7 @@ import SwiftUI
 
 struct BiomechanicsView: View {
     @Bindable var lab: SwingLab
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var faultLesson: String?
     @State private var progress: Double = 0.72   // 0 = address, 0.72 = impact, 1 = finish
     @State private var playing = false
@@ -22,9 +23,10 @@ struct BiomechanicsView: View {
     @State private var pressureExpanded = false
     @State private var faceExpanded = false
     @State private var patternsExpanded = false
-    @State private var viewAngle: StageViewAngle = .faceOn
     @State private var showGhost = false
     @State private var slowMotion = false
+    @State private var selectedPage = 0
+    @State private var showingMovementAnalysis = false
 
     private var bio: Biomechanics { lab.biomechanics }
 
@@ -106,80 +108,233 @@ struct BiomechanicsView: View {
     }
 
     var body: some View {
-        Screen("Swing Lab", titleDisplayMode: .inline) {
-            compactDeliverySummary
-            motionAnalysisCard
-            rotationSequenceCard
-            pressureLowPointCard
-            faceDeliveryCard
-            faultPicker
-            actionButtons
+        NavigationStack {
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    analyticalHeader
+                        .padding(.horizontal, 16)
+                    pageSelector
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+
+                    TabView(selection: $selectedPage) {
+                        clubMotionPage(height: proxy.size.height - 100)
+                            .tag(0)
+                        swingMechanicsPage(height: proxy.size.height - 100)
+                            .tag(1)
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                }
+            }
+            .navigationTitle("Swing Lab")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var pageSelector: some View {
+        HStack(spacing: 28) {
+            pageButton("Club Motion", page: 0)
+            pageButton("Swing Mechanics", page: 1)
+            Spacer()
+            HStack(spacing: 5) {
+                Circle().fill(selectedPage == 0 ? Color.primary : Color.secondary.opacity(0.22)).frame(width: 5, height: 5)
+                Circle().fill(selectedPage == 1 ? Color.primary : Color.secondary.opacity(0.22)).frame(width: 5, height: 5)
+            }
+        }
+        .frame(height: 38)
+    }
+
+    private func pageButton(_ title: String, page: Int) -> some View {
+        Button {
+            if reduceMotion { selectedPage = page }
+            else { withAnimation(.easeInOut(duration: 0.22)) { selectedPage = page } }
+        } label: {
+            Text(title)
+                .font(.subheadline.weight(selectedPage == page ? .semibold : .regular))
+                .foregroundStyle(selectedPage == page ? Color.primary : Color.secondary)
+                .padding(.vertical, 7)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(selectedPage == page ? Color.primary : .clear).frame(height: 2)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func clubMotionPage(height: CGFloat) -> some View {
+        motionAnalysisCard(viewerHeight: max(230, height - 170))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+    }
+
+    private func swingMechanicsPage(height: CGFloat) -> some View {
+        VStack(spacing: 6) {
+            SwingGeometryTool(
+                measuredLowPoint: bio.lowPointPastBall,
+                club: bio.club,
+                angleOfAttack: lab.swing.angleOfAttack,
+                dynamicLoft: lab.swing.dynamicLoft
+            )
+            Button {
+                showingMovementAnalysis = true
+            } label: {
+                Label("Movement Inputs", systemImage: "slider.horizontal.3")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .sheet(isPresented: $showingMovementAnalysis) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        rotationSequenceCard
+                        mechanicsHeader
+                        pressureLowPointCard
+                        faceDeliveryCard
+                        faultPicker
+                        actionButtons
+                    }
+                    .padding()
+                }
+                .navigationTitle("Movement Inputs")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done") { showingMovementAnalysis = false }
+                    }
+                }
+            }
         }
     }
 
     // MARK: - Motion analysis
 
-    private var motionAnalysisCard: some View {
-        CardSection("Motion Analysis", systemImage: "figure.golf") {
-            VStack(spacing: Theme.innerGap) {
-                clubPicker
-
-                Picker("View", selection: $viewAngle) {
-                    ForEach(StageViewAngle.allCases) { angle in
-                        Text(angle.rawValue).tag(angle)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                TimelineView(.animation(paused: !playing)) { tl in
-                    let t = liveProgress(now: tl.date)
-                    let pose = bio.engine.pose(at: t)
-
-                    VStack(spacing: Theme.innerGap) {
-                        SwingStageView(pose: pose, bio: bio, viewAngle: viewAngle, showGhost: showGhost)
-                            .overlay(alignment: .top) { phaseBanner(pose) }
-                            .frame(height: 230)
-                            .frame(maxWidth: .infinity)
-                            .background(Theme.inset)
-                            .clipShape(RoundedRectangle(cornerRadius: Theme.insetRadius))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: Theme.insetRadius)
-                                    .stroke(.secondary.opacity(0.10), lineWidth: 1)
-                            }
-                            .overlay(alignment: .bottomLeading) { stageToggles }
-                            .overlay(alignment: .bottomTrailing) {
-                                Button {
-                                    startPlayback()
-                                } label: {
-                                    Label(playing ? "Playing" : "Play", systemImage: "play.fill")
-                                        .font(.caption2)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .padding(10)
-                            }
-
-                        VStack(spacing: 2) {
-                            Slider(value: Binding(get: { t }, set: { stopPlayback(at: $0) }), in: 0...1)
-                            phaseRuler
+    private var analyticalHeader: some View {
+        VStack(spacing: 10) {
+            HStack(alignment: .center) {
+                Menu {
+                    Picker("Club", selection: $lab.biomechanics.club) {
+                        ForEach(Biomechanics.Club.allCases) { club in
+                            Text(club.rawValue).tag(club)
                         }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(bio.club.rawValue).font(.headline)
+                        Image(systemName: "chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(.primary)
+                }
+                Spacer()
+                Text("Live model")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            Divider()
+        }
+    }
+
+    private func motionAnalysisCard(viewerHeight: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("CLUB MOTION")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            TimelineView(.animation(paused: !playing)) { tl in
+                let t = liveProgress(now: tl.date)
+                let pose = bio.engine.pose(at: t)
+
+                VStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(swingPhase(pose).uppercased()).font(.caption2.weight(.semibold))
+                        Text(phaseCallout(pose)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    SwingStageView(
+                        pose: pose,
+                        bio: bio,
+                        viewAngle: .spatial,
+                        subject: .club,
+                        showGhost: showGhost,
+                        presentation: .motion
+                    )
+                    .frame(height: viewerHeight)
+                    .frame(maxWidth: .infinity)
+
+                    technicalTimeline(progress: t)
+
+                    HStack {
+                        stageToggles
+                        Spacer()
+                        Button {
+                            playing ? stopPlayback(at: t) : startPlayback()
+                        } label: {
+                            Label(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                     }
                 }
             }
+        }
+    }
+
+    private func compactChoice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.primary : Color.secondary)
+                .padding(.vertical, 5)
+                .overlay(alignment: .bottom) {
+                    Rectangle().fill(selected ? Color.accentColor : .clear).frame(height: 2)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func technicalTimeline(progress: Double) -> some View {
+        VStack(spacing: 5) {
+            GeometryReader { geo in
+                let width = geo.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.secondary.opacity(0.16)).frame(height: 2)
+                    Capsule().fill(Color.primary.opacity(0.55)).frame(width: width * progress, height: 2)
+                    ForEach([0.0, SwingEngine.Output.topProgress, SwingEngine.Output.impactProgress, 1.0], id: \.self) { event in
+                        Circle()
+                            .fill(abs(progress - event) < 0.035 ? Color.accentColor : Color(.systemBackground))
+                            .overlay(Circle().stroke(.secondary.opacity(0.65), lineWidth: 1))
+                            .frame(width: 9, height: 9)
+                            .offset(x: width * event - 4.5)
+                    }
+                    Circle().fill(Color.accentColor).frame(width: 5, height: 14)
+                        .offset(x: width * progress - 2.5)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+                    stopPlayback(at: min(1, max(0, value.location.x / width)))
+                })
+            }
+            .frame(height: 18)
+            phaseRuler
         }
     }
 
     /// Ghost-comparison and slow-motion chips on the stage.
     private var stageToggles: some View {
         HStack(spacing: 6) {
-            stageChip("Ghost", systemImage: "person.fill.viewfinder", active: showGhost) {
+            stageChip("Ghost", systemImage: "square.on.square.dashed", active: showGhost) {
                 showGhost.toggle()
             }
             stageChip(slowMotion ? "¼×" : "1×", systemImage: "gauge.with.needle", active: slowMotion) {
                 slowMotion.toggle()
             }
         }
-        .padding(10)
+        .padding(.vertical, 4)
     }
 
     private func stageChip(_ title: String, systemImage: String, active: Bool,
@@ -224,6 +379,98 @@ struct BiomechanicsView: View {
             }
         }
         .pickerStyle(.segmented)
+    }
+
+    private var contextualMeasurements: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 18) {
+                instrumentMetric("LOW POINT", lowPointFriendlyText)
+                instrumentMetric("CLUB PATH", String(format: "%+.1f°", bio.clubPath))
+                instrumentMetric("AoA", String(format: "%+.1f°", bio.angleOfAttack))
+            }
+            Divider()
+            HStack(alignment: .top, spacing: 18) {
+                instrumentMetric("FACE", String(format: "%+.1f°", bio.faceAngle))
+                instrumentMetric("SHAFT LEAN", String(format: "%+.1f°", bio.shaftLean))
+                instrumentMetric("SPEED", String(format: "%.0f mph", bio.swingSpeed))
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func instrumentMetric(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .lineLimit(2)
+                .minimumScaleFactor(0.72)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var lowPointFriendlyText: String {
+        let value = bio.lowPointPastBall
+        if abs(value) < 1 { return "At ball" }
+        return String(format: "%.0f cm %@", abs(value), value > 0 ? "ahead" : "behind")
+    }
+
+    private var interpretationSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Divider()
+            interpretationBlock("WHAT HAPPENED", whatHappened)
+            interpretationBlock("WHY IT MATTERS", whyItMatters)
+            Button {
+                pressureExpanded = true
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("WORK ON").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        Text("Low Point Control")
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.right")
+                }
+            }
+            .buttonStyle(.plain)
+            Divider()
+        }
+    }
+
+    private func interpretationBlock(_ heading: String, _ copy: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(heading).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Text(copy).font(.subheadline).foregroundStyle(.primary)
+        }
+    }
+
+    private var whatHappened: String {
+        let value = abs(bio.lowPointPastBall)
+        if value < 1 { return "The club reached its lowest point at the ball." }
+        return String(format: "The club reached its lowest point %.0f cm %@ the ball.", value, bio.lowPointPastBall > 0 ? "ahead of" : "behind")
+    }
+
+    private var whyItMatters: String {
+        if bio.lowPointPastBall < -1 {
+            return bio.club == .driver
+                ? "A low point behind the teed ball supports an upward strike."
+                : "A low point behind the ball can reduce compression and contact consistency."
+        }
+        if bio.lowPointPastBall > 1 { return "A low point ahead of the ball supports a descending, ball-first strike." }
+        return "Low point near the ball produces a relatively neutral strike."
+    }
+
+    private var mechanicsHeader: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("MECHANICS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text("Adjust the movement inputs behind the measured delivery.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 8)
     }
 
     private var compactDeliverySummary: some View {
@@ -525,6 +772,249 @@ struct BiomechanicsView: View {
         case .ok: return .orange
         case .good: return .green
         }
+    }
+}
+
+// MARK: - Interactive swing-geometry instrument
+
+private enum SwingGeometryPreset: String, CaseIterable, Identifiable {
+    case teeOff = "Tee Off"
+    case fairway = "Fairway"
+    case threeX = "3x"
+    case sandWedge = "SW"
+
+    var id: String { rawValue }
+
+    var values: (radius: Double, distance: Double, height: Double, plane: Double) {
+        switch self {
+        case .teeOff: return (112, -6, -4, 55)
+        case .fairway: return (100, 11, -10, 70)
+        case .threeX: return (78, 6, -14, 72)
+        case .sandWedge: return (92, 8, -12, 68)
+        }
+    }
+}
+
+private struct SwingGeometryTool: View {
+    let measuredLowPoint: Double
+    let club: Biomechanics.Club
+    let angleOfAttack: Double
+    let dynamicLoft: Double
+
+    @State private var selectedPreset: SwingGeometryPreset
+    @State private var swingRadius: Double
+    @State private var lowPointDistance: Double
+    @State private var lowPointHeight: Double
+    @State private var swingPlane: Double
+
+    init(measuredLowPoint: Double, club: Biomechanics.Club, angleOfAttack: Double, dynamicLoft: Double) {
+        self.measuredLowPoint = measuredLowPoint
+        self.club = club
+        self.angleOfAttack = angleOfAttack
+        self.dynamicLoft = dynamicLoft
+        _selectedPreset = State(initialValue: club == .driver ? .teeOff : .fairway)
+        _swingRadius = State(initialValue: club == .driver ? 112 : 100)
+        _lowPointDistance = State(initialValue: measuredLowPoint)
+        _lowPointHeight = State(initialValue: club == .driver ? -4 : -8)
+        _swingPlane = State(initialValue: club == .driver ? 55 : 63)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let visualizationHeight = min(330, max(180, proxy.size.height - 260))
+            VStack(alignment: .leading, spacing: 8) {
+                Text("SWING MECHANICS")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 4) {
+                    ForEach(SwingGeometryPreset.allCases) { preset in
+                        Button {
+                            applyPreset(preset)
+                        } label: {
+                            Text(preset.rawValue)
+                                .font(.caption.weight(selectedPreset == preset ? .semibold : .regular))
+                                .foregroundStyle(selectedPreset == preset ? Color.primary : Color.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 6)
+                                .background(selectedPreset == preset ? Theme.inset : .clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                LowPointGeometryCanvas(
+                    radius: swingRadius,
+                    distance: lowPointDistance,
+                    height: lowPointHeight,
+                    plane: swingPlane
+                )
+                .frame(height: visualizationHeight)
+
+                VStack(spacing: 5) {
+                    geometrySlider("Swing Radius", value: $swingRadius, range: 70...130, step: 1,
+                                   valueText: "\(Int(swingRadius)) cm")
+                    geometrySlider("Low Point Distance", value: $lowPointDistance, range: -24...24, step: 0.5,
+                                   valueText: distanceText)
+                    geometrySlider("Low Point Height", value: $lowPointHeight, range: -40...60, step: 1,
+                                   valueText: String(format: "%+.0f mm", lowPointHeight))
+                    geometrySlider("Swing Plane", value: $swingPlane, range: 45...90, step: 1,
+                                   valueText: "\(Int(swingPlane))°")
+                }
+
+                HStack(spacing: 0) {
+                    modelOutput("AoA", String(format: "%+.1f°", angleOfAttack))
+                    Divider().frame(height: 28)
+                    modelOutput("Dynamic Loft", String(format: "%.1f°", dynamicLoft))
+                }
+                .accessibilityElement(children: .contain)
+            }
+        }
+        .onChange(of: club) { _, newClub in
+            applyPreset(newClub == .driver ? .teeOff : .fairway, useMeasuredLowPoint: true)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func applyPreset(_ preset: SwingGeometryPreset, useMeasuredLowPoint: Bool = false) {
+        selectedPreset = preset
+        let values = preset.values
+        swingRadius = values.radius
+        lowPointDistance = useMeasuredLowPoint ? measuredLowPoint : values.distance
+        lowPointHeight = values.height
+        swingPlane = values.plane
+    }
+
+    private func geometrySlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>,
+                                step: Double, valueText: String) -> some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(title).font(.caption.weight(.medium))
+                Spacer()
+                Text(valueText).font(.caption.weight(.semibold).monospacedDigit())
+            }
+            Slider(value: value, in: range, step: step)
+                .tint(Color(red: 0.67, green: 0.52, blue: 0.30))
+        }
+    }
+
+    private func modelOutput(_ title: String, _ value: String) -> some View {
+        VStack(spacing: 1) {
+            Text(title.uppercased()).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            Text(value).font(.subheadline.weight(.semibold).monospacedDigit())
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var distanceText: String {
+        if abs(lowPointDistance) < 0.25 { return "0 cm" }
+        return String(format: "%.1f cm %@", abs(lowPointDistance), lowPointDistance > 0 ? "ahead" : "behind")
+    }
+}
+
+private struct LowPointGeometryCanvas: View {
+    let radius: Double
+    let distance: Double
+    let height: Double
+    let plane: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let heightPx = geo.size.height
+            let groundY = heightPx * 0.70
+            let ballX = width * 0.48
+            let centimetersToPixels = min(width / 68, heightPx / 46)
+            let lowX = ballX + CGFloat(distance) * centimetersToPixels
+            let lowY = groundY - CGFloat(height / 10) * centimetersToPixels
+            let radiusPx = CGFloat(radius) * centimetersToPixels
+            let clubX = ballX - width * 0.13
+            let clubY = arcY(x: clubX, lowX: lowX, lowY: lowY, radius: radiusPx, plane: plane)
+
+            ZStack {
+                Color(.systemBackground)
+
+                // Swing plane reference: steeper planes appear narrower.
+                Ellipse()
+                    .stroke(Theme.path.opacity(0.20), style: StrokeStyle(lineWidth: 1, dash: [5, 6]))
+                    .frame(width: width * 0.82,
+                           height: heightPx * CGFloat(0.22 + 0.30 * sin(plane * .pi / 180)))
+                    .position(x: width * 0.48, y: heightPx * 0.40)
+
+                Path { path in
+                    path.move(to: CGPoint(x: 14, y: groundY))
+                    path.addLine(to: CGPoint(x: width - 14, y: groundY))
+                }
+                .stroke(.secondary.opacity(0.35), lineWidth: 1.2)
+
+                Path { path in
+                    let steps = 72
+                    for index in 0...steps {
+                        let x = width * (0.06 + 0.88 * CGFloat(index) / CGFloat(steps))
+                        let point = CGPoint(x: x, y: arcY(x: x, lowX: lowX, lowY: lowY,
+                                                         radius: radiusPx, plane: plane))
+                        index == 0 ? path.move(to: point) : path.addLine(to: point)
+                    }
+                }
+                .stroke(Color(red: 0.67, green: 0.52, blue: 0.30),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round))
+
+                targetArrow(from: CGPoint(x: ballX, y: groundY + 18), width: width)
+
+                Circle().fill(.white).stroke(.secondary, lineWidth: 1.2)
+                    .frame(width: 13, height: 13).position(x: ballX, y: groundY - 7)
+                Text("BALL").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary)
+                    .position(x: ballX, y: groundY + 11)
+
+                Circle().fill(Theme.face).frame(width: 9, height: 9).position(x: lowX, y: lowY)
+                Text("LOW POINT").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.face)
+                    .position(x: lowX, y: lowY + 16)
+
+                measurement(from: lowX, to: ballX, y: min(heightPx - 22, groundY + 38))
+
+                // Minimal instrumented club at a sampled point on the arc.
+                Path { path in
+                    path.move(to: CGPoint(x: clubX, y: clubY))
+                    let radians = CGFloat(plane) * .pi / 180
+                    path.addLine(to: CGPoint(x: clubX + cos(radians) * 112, y: clubY - sin(radians) * 112))
+                }
+                .stroke(.secondary.opacity(0.75), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                Capsule().fill(.primary.opacity(0.88)).frame(width: 24, height: 8)
+                    .rotationEffect(.degrees(-8)).position(x: clubX, y: clubY)
+
+                Text("PLANE \(Int(plane))°")
+                    .font(.system(size: 8, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.path)
+                    .position(x: width - 52, y: 18)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.secondary.opacity(0.12), lineWidth: 1))
+    }
+
+    private func arcY(x: CGFloat, lowX: CGFloat, lowY: CGFloat, radius: CGFloat, plane: Double) -> CGFloat {
+        let horizontal = min(abs(x - lowX), radius * 0.98)
+        let circularRise = radius - sqrt(max(radius * radius - horizontal * horizontal, 0))
+        return lowY - circularRise * CGFloat(sin(plane * .pi / 180))
+    }
+
+    private func measurement(from start: CGFloat, to end: CGFloat, y: CGFloat) -> some View {
+        Path { path in
+            path.move(to: CGPoint(x: start, y: y)); path.addLine(to: CGPoint(x: end, y: y))
+            path.move(to: CGPoint(x: start, y: y - 4)); path.addLine(to: CGPoint(x: start, y: y + 4))
+            path.move(to: CGPoint(x: end, y: y - 4)); path.addLine(to: CGPoint(x: end, y: y + 4))
+        }
+        .stroke(Theme.face.opacity(0.65), lineWidth: 1)
+    }
+
+    private func targetArrow(from origin: CGPoint, width: CGFloat) -> some View {
+        Path { path in
+            path.move(to: origin); path.addLine(to: CGPoint(x: width - 18, y: origin.y))
+            path.move(to: CGPoint(x: width - 25, y: origin.y - 4)); path.addLine(to: CGPoint(x: width - 18, y: origin.y))
+            path.addLine(to: CGPoint(x: width - 25, y: origin.y + 4))
+        }
+        .stroke(Theme.path.opacity(0.65), lineWidth: 1.3)
     }
 }
 
@@ -1003,4 +1493,3 @@ struct KinematicSequenceView: View {
         .frame(height: 260)
         .padding()
 }
-

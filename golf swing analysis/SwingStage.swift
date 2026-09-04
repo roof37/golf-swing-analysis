@@ -4,7 +4,7 @@
 //
 //  The motion-analysis stage. The figure lives in real 3D world space
 //  (meters; +x toward the target, +y up, +z out toward the ball line) and is
-//  rendered through one of two orthographic cameras:
+//  rendered through four orthographic cameras:
 //
 //    • Face-On — the classic front view. Pelvis/thorax rotation reads as
 //      foreshortening of the bars, the way a camera would actually see it.
@@ -18,11 +18,60 @@
 //
 
 import SwiftUI
+import simd
 
 enum StageViewAngle: String, CaseIterable, Identifiable {
+    case spatial = "3D"
     case faceOn = "Face-On"
     case downTheLine = "Down the Line"
+    case top = "Top"
     var id: String { rawValue }
+}
+
+/// What the stage is drawing: the whole golfer, or just the club and how it
+/// meets the ball. Both subjects render through the same `StageViewAngle`
+/// cameras.
+enum StageSubject: String, CaseIterable, Identifiable {
+    case body = "Body"
+    case club = "Club"
+    var id: String { rawValue }
+}
+
+enum SwingStagePresentation {
+    case analysis
+    case motion
+}
+
+/// Pure geometry for the Club-focus overlay, split out so the parts that are
+/// just math can be unit-tested without a `Canvas`.
+enum ClubFocusGeometry {
+
+    /// Unit world-space direction the clubhead travels through impact, for the
+    /// ground arrow. World frame matches `SwingPlane`: +x toward the target,
+    /// +y up, +z from the golfer out toward the ball line. `path` (deg,
+    /// + = in-to-out / right of target) is the heading about vertical; `attack`
+    /// (deg, + = up) is the vertical tilt. Recoverable with the same `atan2`
+    /// convention `SwingPlane.clubPath` / `attackAngle` use.
+    static func groundArrowVector(path: Double, attack: Double) -> SIMD3<Double> {
+        let p = path * .pi / 180
+        let a = attack * .pi / 180
+        return SIMD3(cos(a) * cos(p), sin(a), cos(a) * sin(p))
+    }
+
+    /// World heel→toe axis of the face: the ball-line axis (+z) yawed about
+    /// vertical by the face angle (deg, + = open / pointed right).
+    static func faceEdgeAxis(faceAngle: Double) -> SIMD3<Double> {
+        let f = faceAngle * .pi / 180
+        return SIMD3(-sin(f), 0, cos(f))
+    }
+
+    /// World face normal — where the face points: down the target line (+x)
+    /// yawed by the face angle and pitched back (up) by the dynamic loft.
+    static func faceNormal(faceAngle: Double, dynamicLoft: Double) -> SIMD3<Double> {
+        let f = faceAngle * .pi / 180
+        let l = dynamicLoft * .pi / 180
+        return SIMD3(cos(l) * cos(f), sin(l), cos(l) * sin(f))
+    }
 }
 
 // MARK: - World-space figure
@@ -118,16 +167,20 @@ private struct StageCamera {
     /// toward the target with the ball line to the right.
     static func viewPoint(_ p: SIMD3<Double>, angle: StageViewAngle) -> CGPoint {
         switch angle {
+        case .spatial: return CGPoint(x: -0.78 * p.x + 0.52 * p.z, y: p.y + 0.20 * p.x + 0.10 * p.z)
         case .faceOn: return CGPoint(x: -p.x, y: p.y)
         case .downTheLine: return CGPoint(x: p.z, y: p.y)
+        case .top: return CGPoint(x: -p.x, y: -p.z + 0.08 * p.y)
         }
     }
 
     /// Depth toward the camera (bigger = nearer), for subtle weight cues.
     static func depth(_ p: SIMD3<Double>, angle: StageViewAngle) -> Double {
         switch angle {
+        case .spatial: return 0.48 * p.x + 0.72 * p.z + 0.18 * p.y
         case .faceOn: return p.z
         case .downTheLine: return -p.x
+        case .top: return p.y
         }
     }
 
@@ -162,7 +215,9 @@ struct SwingStageView: View {
     let pose: GolferPose
     let bio: Biomechanics
     var viewAngle: StageViewAngle = .faceOn
+    var subject: StageSubject = .body
     var showGhost: Bool = false
+    var presentation: SwingStagePresentation = .analysis
 
     /// The comparison body: the Tour Move pattern swinging the same club.
     static func ghostBody(club: Biomechanics.Club) -> Biomechanics {
@@ -198,31 +253,79 @@ struct SwingStageView: View {
             }() : nil
 
             let figure = SwingFigure3D(pose: pose, club: club, plane: plane)
-            var fitPoints = trailPoints
-            fitPoints.append(contentsOf: [figure.leadFoot, figure.trailFoot, figure.head, ball])
-            if let ghost { fitPoints.append(contentsOf: ghost.trail) }
+            var fitPoints: [SIMD3<Double>]
+            switch subject {
+            case .body:
+                fitPoints = trailPoints
+                fitPoints.append(contentsOf: [figure.leadFoot, figure.trailFoot, figure.head, ball])
+                if let ghost { fitPoints.append(contentsOf: ghost.trail) }
+            case .club:
+                if presentation == .motion {
+                    // Follow the current club and its short history so the club
+                    // fills the phone viewport throughout the swing.
+                    let last = min(trailPoints.count - 1,
+                                   max(1, Int(pose.progress * Double(trailPoints.count - 1))))
+                    let first = max(0, last - max(8, trailPoints.count / 9))
+                    fitPoints = Array(trailPoints[first...last])
+                    fitPoints.append(contentsOf: [figure.hands, figure.clubhead, ball])
+                } else {
+                    let dx = 0.62, up = 0.52, down = 0.18, dz = 0.62
+                    fitPoints = [
+                        ball + SIMD3<Double>( dx,  up, 0),
+                        ball + SIMD3<Double>(-dx, -down, 0),
+                        ball + SIMD3<Double>(  0, -down,  dz),
+                        ball + SIMD3<Double>(  0,  up, -dz),
+                        figure.clubhead,
+                        figure.hands
+                    ]
+                }
+            }
             let camera = StageCamera(fitting: fitPoints, angle: viewAngle, size: size)
 
-            drawBackdrop(&ctx, camera: camera, size: size, plane: plane, ball: ball)
+            if presentation == .motion {
+                drawMotionBackdrop(&ctx, camera: camera, size: size, ball: ball)
+            } else {
+                drawBackdrop(&ctx, camera: camera, size: size, plane: plane, ball: ball, subject: subject)
+            }
             if let ghost {
                 drawGhost(&ctx, camera: camera, ghost: (ghost.bio, ghost.trail),
-                          progress: pose.progress, club: club)
+                          progress: pose.progress, club: club,
+                          recentOnly: presentation == .motion)
             }
             // With a ghost on stage, heat is normalized to the faster swing —
             // a leaky sequence visibly never reaches full temperature.
             let normSpeed = max(output.headSpeeds.max() ?? 1, ghost?.maxSpeed ?? 1)
             drawTrail(&ctx, camera: camera, points: trailPoints,
-                      speeds: output.headSpeeds, normalizeTo: normSpeed, ball: ball)
-            drawFigure(&ctx, camera: camera, figure: figure)
+                      speeds: output.headSpeeds, normalizeTo: normSpeed, ball: ball,
+                      recentOnly: presentation == .motion)
+            switch subject {
+            case .body:
+                drawFigure(&ctx, camera: camera, figure: figure)
+            case .club:
+                drawClubFocus(&ctx, camera: camera, figure: figure, impact: mech.impact,
+                              lowPointPastBall: mech.diagnostics.lowPointPastBall,
+                              trail: trailPoints, ball: ball,
+                              showsAnnotations: presentation == .analysis)
+            }
         }
         .background(Color(.systemBackground).opacity(0.50), in: RoundedRectangle(cornerRadius: Theme.insetRadius))
-        .accessibilityLabel("Motion analysis: \(viewAngle.rawValue) view of the swing with a speed-colored clubhead trail")
+        .accessibilityLabel("Motion analysis: \(subject.rawValue) subject, \(viewAngle.rawValue) view, with a time-aware clubhead trail")
     }
 
     // MARK: Backdrop
 
+    private func drawMotionBackdrop(_ ctx: inout GraphicsContext, camera: StageCamera,
+                                    size: CGSize, ball: SIMD3<Double>) {
+        let groundY = camera.project(SIMD3(0, 0, 0)).y
+        var ground = Path()
+        ground.move(to: CGPoint(x: 12, y: groundY))
+        ground.addLine(to: CGPoint(x: size.width - 12, y: groundY))
+        ctx.stroke(ground, with: .color(.secondary.opacity(0.22)), lineWidth: 1)
+    }
+
     private func drawBackdrop(_ ctx: inout GraphicsContext, camera: StageCamera,
-                              size: CGSize, plane: SwingPlane, ball: SIMD3<Double>) {
+                              size: CGSize, plane: SwingPlane, ball: SIMD3<Double>,
+                              subject: StageSubject) {
         let groundY = camera.project(SIMD3(0, 0, 0)).y
 
         var ground = Path()
@@ -233,6 +336,15 @@ struct SwingStageView: View {
         let ballPoint = camera.project(ball)
 
         switch viewAngle {
+        case .spatial:
+            // Two ground-plane axes make the isometric projection readable.
+            var target = Path()
+            target.move(to: camera.project(ball - SIMD3<Double>(0.45, 0, 0)))
+            target.addLine(to: camera.project(ball + SIMD3<Double>(0.65, 0, 0)))
+            ctx.stroke(target, with: .color(Theme.path.opacity(0.30)),
+                       style: StrokeStyle(lineWidth: 1.2, dash: [5, 5]))
+            ctx.draw(Text("TARGET").font(.system(size: 7, weight: .semibold)).foregroundStyle(.secondary),
+                     at: camera.project(ball + SIMD3<Double>(0.72, 0, 0)))
         case .faceOn:
             // Stance center reference.
             var center = Path()
@@ -240,18 +352,21 @@ struct SwingStageView: View {
             center.addLine(to: CGPoint(x: camera.project(SIMD3(0, 0, 0)).x, y: groundY))
             ctx.stroke(center, with: .color(.secondary.opacity(0.10)),
                        style: StrokeStyle(lineWidth: 1, dash: [4, 6]))
-            // Target direction along the ground.
-            let arrowY = groundY + 9
-            var arrow = Path()
-            arrow.move(to: CGPoint(x: ballPoint.x - 14, y: arrowY))
-            arrow.addLine(to: CGPoint(x: ballPoint.x - 44, y: arrowY))
-            arrow.move(to: CGPoint(x: ballPoint.x - 38, y: arrowY - 4))
-            arrow.addLine(to: CGPoint(x: ballPoint.x - 44, y: arrowY))
-            arrow.addLine(to: CGPoint(x: ballPoint.x - 38, y: arrowY + 4))
-            ctx.stroke(arrow, with: .color(.secondary.opacity(0.45)), lineWidth: 1)
-            ctx.draw(Text("TARGET").font(.system(size: 7, weight: .semibold))
-                .foregroundStyle(.secondary.opacity(0.65)),
-                     at: CGPoint(x: ballPoint.x - 66, y: arrowY))
+            // Target direction along the ground. The Club subject draws its own
+            // (bolder) path arrow from the ball, so this would only double up.
+            if subject == .body {
+                let arrowY = groundY + 9
+                var arrow = Path()
+                arrow.move(to: CGPoint(x: ballPoint.x - 14, y: arrowY))
+                arrow.addLine(to: CGPoint(x: ballPoint.x - 44, y: arrowY))
+                arrow.move(to: CGPoint(x: ballPoint.x - 38, y: arrowY - 4))
+                arrow.addLine(to: CGPoint(x: ballPoint.x - 44, y: arrowY))
+                arrow.addLine(to: CGPoint(x: ballPoint.x - 38, y: arrowY + 4))
+                ctx.stroke(arrow, with: .color(.secondary.opacity(0.45)), lineWidth: 1)
+                ctx.draw(Text("TARGET").font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.65)),
+                         at: CGPoint(x: ballPoint.x - 66, y: arrowY))
+            }
 
         case .downTheLine:
             // The delivery plane through the ball — and, when the transition
@@ -282,9 +397,19 @@ struct SwingStageView: View {
                     .foregroundStyle(deliveryColor),
                          at: CGPoint(x: labelAt.x, y: labelAt.y - 9))
             }
-            ctx.draw(Text("TARGET ⊙").font(.system(size: 7, weight: .semibold))
-                .foregroundStyle(.secondary.opacity(0.65)),
-                     at: CGPoint(x: ballPoint.x, y: groundY + 10))
+            if subject == .body {
+                ctx.draw(Text("TARGET ⊙").font(.system(size: 7, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.65)),
+                         at: CGPoint(x: ballPoint.x, y: groundY + 10))
+            }
+        case .top:
+            var target = Path()
+            target.move(to: camera.project(ball - SIMD3<Double>(0.55, 0, 0)))
+            target.addLine(to: camera.project(ball + SIMD3<Double>(0.75, 0, 0)))
+            ctx.stroke(target, with: .color(Theme.path.opacity(0.38)),
+                       style: StrokeStyle(lineWidth: 1.2, dash: [5, 5]))
+            ctx.draw(Text("TARGET LINE").font(.system(size: 7, weight: .semibold)).foregroundStyle(.secondary),
+                     at: camera.project(ball + SIMD3<Double>(0.65, 0, 0)))
         }
     }
 
@@ -292,22 +417,25 @@ struct SwingStageView: View {
 
     private func drawGhost(_ ctx: inout GraphicsContext, camera: StageCamera,
                            ghost: (bio: Biomechanics, trail: [SIMD3<Double>]), progress: Double,
-                           club: Biomechanics.Club) {
+                           club: Biomechanics.Club, recentOnly: Bool = false) {
         var arc = Path()
-        for (i, p) in ghost.trail.enumerated() {
+        let last = min(ghost.trail.count - 1, max(1, Int(progress * Double(ghost.trail.count - 1))))
+        let first = recentOnly ? max(0, last - max(8, ghost.trail.count / 9)) : 0
+        for i in first...last {
+            let p = ghost.trail[i]
             let point = camera.project(p)
-            if i == 0 { arc.move(to: point) } else { arc.addLine(to: point) }
+            if i == first { arc.move(to: point) } else { arc.addLine(to: point) }
         }
         ctx.stroke(arc, with: .color(.secondary.opacity(0.16)),
                    style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
-        // Ghost arm + club at the same moment of the swing.
+        // Ghost club at the same moment of the swing; no body figure appears
+        // in the club-centric instrument view.
         let gMech = ghost.bio.mechanics
         let gPose = gMech.timeline.pose(at: progress)
         let gFigure = SwingFigure3D(pose: gPose, club: club, plane: gMech.plane)
         var limbs = Path()
-        limbs.move(to: camera.project(gFigure.thorax))
-        limbs.addLine(to: camera.project(gFigure.hands))
+        limbs.move(to: camera.project(gFigure.hands))
         limbs.addLine(to: camera.project(gFigure.clubhead))
         ctx.stroke(limbs, with: .color(.secondary.opacity(0.35)),
                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
@@ -328,28 +456,50 @@ struct SwingStageView: View {
 
     private func drawTrail(_ ctx: inout GraphicsContext, camera: StageCamera,
                            points: [SIMD3<Double>], speeds: [Double],
-                           normalizeTo maxSpeed: Double, ball: SIMD3<Double>) {
+                           normalizeTo maxSpeed: Double, ball: SIMD3<Double>,
+                           recentOnly: Bool = false) {
         guard points.count > 2 else { return }
         let screen = points.map(camera.project)
 
-        // The whole arc, faintly — the road ahead.
-        var whole = Path()
-        whole.move(to: screen[0])
-        for p in screen.dropFirst() { whole.addLine(to: p) }
-        ctx.stroke(whole, with: .color(.secondary.opacity(0.10)), lineWidth: 1)
-
-        // The traveled part, colored by clubhead speed. The gradient is the
-        // teaching visual: a good sequence stays cool most of the way down
-        // and ignites at the bottom; a cast warms early and never gets hot.
+        // Future motion is visible as a quiet dashed prediction.
         let norm = max(maxSpeed, 1)
         let lastIndex = max(1, min(screen.count - 1, Int(pose.progress * Double(screen.count - 1))))
-        for i in 1...lastIndex {
+        if !recentOnly && lastIndex < screen.count - 1 {
+            var future = Path()
+            future.move(to: screen[lastIndex])
+            for p in screen[(lastIndex + 1)...] { future.addLine(to: p) }
+            ctx.stroke(future, with: .color(.secondary.opacity(0.15)),
+                       style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
+        }
+
+        // Traveled motion fades with age. Speed still modulates thickness,
+        // while temporal proximity makes the current position unmistakable.
+        let sand = Color(red: 0.67, green: 0.52, blue: 0.30)
+        let firstVisible = recentOnly ? max(1, lastIndex - max(8, screen.count / 9)) : 1
+        for i in firstVisible...lastIndex {
             let f = speeds[i] / norm
+            let visibleCount = max(lastIndex - firstVisible + 1, 1)
+            let age = Double(lastIndex - i) / Double(visibleCount)
+            let recency = 1 - age
             var seg = Path()
             seg.move(to: screen[i - 1])
             seg.addLine(to: screen[i])
-            ctx.stroke(seg, with: .color(trailColor(fraction: f).opacity(0.20 + 0.65 * f)),
-                       style: StrokeStyle(lineWidth: 1.0 + 2.4 * f, lineCap: .round))
+            ctx.stroke(seg, with: .color(sand.opacity(0.12 + 0.76 * recency)),
+                       style: StrokeStyle(lineWidth: 1.0 + 1.5 * f + 1.2 * recency, lineCap: .round))
+        }
+
+        // A small chevron integrated into the trail communicates direction.
+        if lastIndex >= 2 {
+            let a = screen[lastIndex - 1], b = screen[lastIndex]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let length = max(hypot(dx, dy), 1)
+            let ux = dx / length, uy = dy / length
+            var chevron = Path()
+            chevron.move(to: CGPoint(x: b.x - ux * 8 - uy * 4, y: b.y - uy * 8 + ux * 4))
+            chevron.addLine(to: b)
+            chevron.addLine(to: CGPoint(x: b.x - ux * 8 + uy * 4, y: b.y - uy * 8 - ux * 4))
+            ctx.stroke(chevron, with: .color(sand.opacity(0.92)),
+                       style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
         }
 
         // The ball, sitting exactly where the simulated head meets it.
@@ -414,6 +564,108 @@ struct SwingStageView: View {
         dot(figure.clubhead, 6.5, .primary.opacity(0.80))
     }
 
+    // MARK: Club focus
+
+    /// The Club subject: the shaft and head as delivered, plus a red ground
+    /// arrow for club path + angle of attack and the arc's low point tagged
+    /// relative to the ball. The speed-colored arc itself is already drawn by
+    /// `drawTrail`. Honors both cameras — Face-On reads face angle and shaft
+    /// lean, Down the Line reads path direction and loft.
+    private func drawClubFocus(_ ctx: inout GraphicsContext, camera: StageCamera,
+                               figure: SwingFigure3D, impact: ImpactDelivery,
+                               lowPointPastBall: Double, trail: [SIMD3<Double>],
+                               ball: SIMD3<Double>, showsAnnotations: Bool = true) {
+        let clubhead = figure.clubhead
+        let hands = figure.hands
+
+        func stroke(_ path: Path, _ color: Color, _ width: CGFloat, dash: [CGFloat] = []) {
+            ctx.stroke(path, with: .color(color),
+                       style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: dash))
+        }
+        func seg(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Path {
+            var p = Path(); p.move(to: camera.project(a)); p.addLine(to: camera.project(b)); return p
+        }
+
+        // Plumb line through the head — the gap to the shaft reads as forward lean.
+        stroke(seg(clubhead - SIMD3<Double>(0, 0.05, 0), clubhead + SIMD3<Double>(0, 0.42, 0)),
+               .secondary.opacity(0.40), 1, dash: [3, 4])
+
+        // Shaft: hands lead the head toward the target.
+        stroke(seg(hands, clubhead), .primary.opacity(0.80), 3)
+
+        // Dark grip at the upper end of the metallic shaft.
+        let gripEnd = hands + 0.18 * (clubhead - hands)
+        stroke(seg(hands, gripEnd), .primary.opacity(0.96), 6)
+
+        // Clubhead: leading edge, plus a tick for where the face points.
+        let edge = 0.11 * ClubFocusGeometry.faceEdgeAxis(faceAngle: impact.faceAngle)
+        stroke(seg(clubhead - edge, clubhead + edge), .primary.opacity(0.90), 5)
+        let normal = 0.12 * ClubFocusGeometry.faceNormal(faceAngle: impact.faceAngle,
+                                                         dynamicLoft: impact.dynamicLoft)
+        stroke(seg(clubhead, clubhead + normal), Theme.face.opacity(0.90), 2)
+
+        // Hands.
+        let handsAt = camera.project(hands)
+        ctx.fill(Circle().path(in: CGRect(x: handsAt.x - 4, y: handsAt.y - 4, width: 8, height: 8)),
+                 with: .color(Theme.face.opacity(0.90)))
+
+        guard showsAnnotations else { return }
+
+        // Ground arrow from the ball: club-path heading tilted by angle of attack.
+        let dir = ClubFocusGeometry.groundArrowVector(path: impact.clubPath, attack: impact.angleOfAttack)
+        let baseAt = camera.project(ball)
+        let tipAt = camera.project(ball + 0.60 * dir)
+        var arrow = Path()
+        arrow.move(to: baseAt); arrow.addLine(to: tipAt)
+        let vx = tipAt.x - baseAt.x, vy = tipAt.y - baseAt.y
+        let len = max(1, hypot(vx, vy))
+        let ux = vx / len, uy = vy / len
+        let wing: CGFloat = 8
+        arrow.move(to: tipAt)
+        arrow.addLine(to: CGPoint(x: tipAt.x - ux * wing - uy * wing * 0.6, y: tipAt.y - uy * wing + ux * wing * 0.6))
+        arrow.move(to: tipAt)
+        arrow.addLine(to: CGPoint(x: tipAt.x - ux * wing + uy * wing * 0.6, y: tipAt.y - uy * wing - ux * wing * 0.6))
+        stroke(arrow, Theme.path.opacity(0.72), 1.7)
+        let directionLabel: String
+        switch viewAngle {
+        case .top, .downTheLine:
+            directionLabel = String(format: "Path %+.1f°", impact.clubPath)
+        case .spatial, .faceOn:
+            directionLabel = String(format: "AoA %+.1f°", impact.angleOfAttack)
+        }
+        ctx.draw(Text(directionLabel).font(.system(size: 8, weight: .semibold).monospacedDigit())
+            .foregroundStyle(Theme.path), at: CGPoint(x: tipAt.x, y: tipAt.y - 12))
+
+        // Straight target-line reference (+x) from the ball.
+        stroke(seg(ball, ball + 0.40 * SIMD3<Double>(1, 0, 0)), .secondary.opacity(0.30), 1, dash: [4, 4])
+
+        // Arc low point, tagged relative to the ball.
+        if let bottom = trail.min(by: { $0.y < $1.y }) {
+            let past = lowPointPastBall >= 0
+            let tint = past ? Theme.path : Theme.face
+            let at = camera.project(bottom)
+            ctx.stroke(Circle().path(in: CGRect(x: at.x - 6, y: at.y - 6, width: 12, height: 12)),
+                       with: .color(tint), lineWidth: 1.5)
+            let ballAt = camera.project(ball)
+            let measureY = max(at.y, ballAt.y) + 12
+            var measure = Path()
+            measure.move(to: CGPoint(x: at.x, y: measureY))
+            measure.addLine(to: CGPoint(x: ballAt.x, y: measureY))
+            measure.move(to: CGPoint(x: at.x, y: measureY - 4))
+            measure.addLine(to: CGPoint(x: at.x, y: measureY + 4))
+            measure.move(to: CGPoint(x: ballAt.x, y: measureY - 4))
+            measure.addLine(to: CGPoint(x: ballAt.x, y: measureY + 4))
+            stroke(measure, tint.opacity(0.65), 1)
+            let cm = abs(lowPointPastBall)
+            let label = cm < 1 ? "low point at ball"
+                : String(format: "low point %.0f cm %@", cm, past ? "ahead" : "behind")
+            ctx.draw(Text(label).font(.system(size: 8, weight: .semibold)).foregroundStyle(tint),
+                     at: CGPoint(x: at.x, y: at.y - 13))
+        }
+        // The delivered face / loft / lean / attack / path numbers live in the
+        // Face Delivery card on this same screen, so the stage stays uncluttered.
+    }
+
     /// Fault coloring only makes sense at delivery: the simulated body is
     /// legitimately closed for most of the downswing.
     private var shoulderTint: Color {
@@ -448,6 +700,21 @@ struct SwingStageView: View {
     var bio = Biomechanics()
     let _ = BodyFault.library.first { $0.name == "Cast & Scoop" }?.apply(to: &bio)
     SwingStageView(pose: bio.engine.pose(at: 0.68), bio: bio, viewAngle: .faceOn, showGhost: true)
+        .frame(height: 380)
+        .padding()
+}
+
+#Preview("Club Focus, Face-On") {
+    let bio = Biomechanics()
+    SwingStageView(pose: bio.engine.pose(at: 0.72), bio: bio, viewAngle: .faceOn, subject: .club)
+        .frame(height: 380)
+        .padding()
+}
+
+#Preview("Club Focus, Down the Line — Cast & Scoop") {
+    var bio = Biomechanics()
+    let _ = BodyFault.library.first { $0.name == "Cast & Scoop" }?.apply(to: &bio)
+    SwingStageView(pose: bio.engine.pose(at: 0.72), bio: bio, viewAngle: .downTheLine, subject: .club)
         .frame(height: 380)
         .padding()
 }

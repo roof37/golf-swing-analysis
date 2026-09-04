@@ -31,7 +31,7 @@ struct RootView: View {
 }
 
 struct ContentView: View {
-    private enum ControlAnchor: Hashable { case face, path, contact, attack, loft, speed }
+    private enum ControlAnchor: Hashable { case face, path, contact, speed }
 
     @Bindable var lab: SwingLab
     var configuration: ShotLabConfiguration = .explore
@@ -437,34 +437,13 @@ struct ContentView: View {
     }
 
     private var deliveryAndContact: some View {
-        CardSection("Delivery & Contact", systemImage: "scope") {
+        CardSection("Contact & Speed", systemImage: "scope") {
             VStack(spacing: 12) {
                 ContactLocationControl(
                     strikeX: $lab.swing.strikeOffset,
                     strikeY: $lab.swing.strikeHeightOffset
                 )
                 .id(ControlAnchor.contact)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 5) {
-                    ParameterSlider(title: "Angle of Attack", value: $lab.swing.angleOfAttack,
-                                    range: -8...8, unit: "°", lowLabel: "Down", highLabel: "Up",
-                                    info: "The vertical direction the clubhead is moving at impact.")
-                    Text(attackDescription).font(.caption).foregroundStyle(.secondary)
-                }
-                .id(ControlAnchor.attack)
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 5) {
-                    ParameterSlider(title: "Dynamic Loft", value: $lab.swing.dynamicLoft,
-                                    range: 6...24, unit: "°", lowLabel: "Low", highLabel: "High",
-                                    info: "The loft delivered by the club at impact.")
-                    Text("Loft delivered at impact.").font(.caption).foregroundStyle(.secondary)
-                    Text("Influences launch · spin · height").font(.caption2.weight(.medium)).foregroundStyle(.tertiary)
-                }
-                .id(ControlAnchor.loft)
 
                 Divider()
 
@@ -477,12 +456,6 @@ struct ContentView: View {
                 .id(ControlAnchor.speed)
             }
         }
-    }
-
-    private var attackDescription: String {
-        if swing.angleOfAttack < -0.5 { return "Clubhead moving downward at impact." }
-        if swing.angleOfAttack > 0.5 { return "Clubhead moving upward at impact." }
-        return "Clubhead moving approximately level at impact."
     }
 
     private var resultingLaunch: some View {
@@ -595,7 +568,7 @@ struct ContentView: View {
     private func variablesReference(onSelect: @escaping (ControlAnchor) -> Void) -> some View {
         CardSection("Ball Flight Variables", systemImage: "square.grid.2x3") {
             VStack(alignment: .leading, spacing: 10) {
-                Text("The six impact variables used in this model.")
+                Text("Ball-flight controls available in Shot Lab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -603,14 +576,12 @@ struct ContentView: View {
                     variableButton("Face", anchor: .face, onSelect: onSelect)
                     variableButton("Path", anchor: .path, onSelect: onSelect)
                     variableButton("Contact", anchor: .contact, onSelect: onSelect)
-                    variableButton("Attack", anchor: .attack, onSelect: onSelect)
-                    variableButton("Loft", anchor: .loft, onSelect: onSelect)
                     variableButton("Speed", anchor: .speed, onSelect: onSelect)
                 }
 
-                DisclosureGroup("About the six variables", isExpanded: $variablesExpanded) {
+                DisclosureGroup("About these variables", isExpanded: $variablesExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach([ControlAnchor.face, .path, .contact, .attack, .loft, .speed], id: \.self) { anchor in
+                        ForEach([ControlAnchor.face, .path, .contact, .speed], id: \.self) { anchor in
                             Text(variableDescription(anchor))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -643,8 +614,6 @@ struct ContentView: View {
         case .face: return "Club Face Angle — Where the club face is pointed horizontally at impact."
         case .path: return "Club Path — The horizontal direction the clubhead is moving at impact."
         case .contact: return "Centeredness of Contact — Where the ball contacts the club face."
-        case .attack: return "Angle of Attack — The vertical direction the clubhead is moving at impact."
-        case .loft: return "Dynamic Loft — The loft delivered by the club at impact."
         case .speed: return "Club Speed — The speed of the clubhead at impact."
         }
     }
